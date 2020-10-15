@@ -10,8 +10,17 @@
 #' @import xts
 #'
 #' @examples
-remove_outlier_median <- function(ohlcv, ohlcv_daily, median_scaler = 20) {
-  ohlcv_daily <- ohlcv_daily[unique(as.Date(zoo::index(market_hour)))]
+remove_outlier_median <- function(ohlcv, median_scaler = 20) {
+
+  # if data is higher than daily don't remove outliers
+  if (deltat(ohlcv) >= 3600) {
+    print('The method works only for intraday data.')
+    return(ohlcv)
+  }
+
+  # con if intraday data
+  ohlcv_daily <- xts::to.daily(ohlcv)
+  ohlcv_daily <- ohlcv_daily[unique(as.Date(zoo::index(ohlcv)))]
   daily_diff <- na.omit(abs(diff(ohlcv_daily)) + 0.05) * median_scaler
   daily_diff <- data.frame(date = as.Date(as.character(zoo::index(daily_diff))), zoo::coredata(daily_diff))
   data_test <- na.omit(diff(ohlcv))

@@ -1,43 +1,52 @@
+library(data.table)
+library(purrr)
 library(xts)
 library(IBrokers)
 library(quantmod)
-library(purrr)
-library(dplyr)
-library(data.table)
-library(DBI)
-library(RMySQL)
-library(anytime)
 library(exuber)
 library(dpseg)
 library(PerformanceAnalytics)
 library(runner)
-library(ggplot2)
-library(tidyr)
-library(AlpacaforR)
 library(future.apply)
 source('R/parallel_functions.R')
-plan(multiprocess)
+source('R/outliers.R')
+plan(multiprocess)  # for multithreading
 
+
+
+
+# PARAMETERS --------------------------------------------------------------
+
+
+symbols <- c('SPY', 'AMZN', 'T')
+freq <- c('1 day', '1 hour')  # 1 day is mandatory
+cache_path <- 'D:/algo_trading_files/ib_cache_r'
+dpseg_rolling <- c(600, 1000)
 
 
 # IMPORT DATA -------------------------------------------------------------
 
+
+# create tw connection and import data for every symbol
 tws <- twsConnect(clientId = 2, host = '127.0.0.1', port = 7496)
-contract <- twsEquity('SPY','SMART','ISLAND')
-market_day <- reqHistoricalData(tws, contract, barSize = '1 day', duration = '25 Y')
-market_hour <- reqHistoricalData(tws, contract, barSize = '1 hour', duration = '25 Y')
-market_minute <- reqHistoricalData(tws, contract, barSize = '1 minute', duration = '25 Y')
-plot(market_hour$SPY.Close)
+contracts <- lapply(symbols, twsEquity, exch = 'SMART', primary = 'ISLAND')
+market_data <- lapply(contracts, function(x) {
+  lapply(freq, function(y) {
+    ohlcv <- reqHistoricalData(tws, x, barSize = y, duration = '5 Y')
+    })
+  })
+market_data <- purrr::flatten(market_data)  # unlist second level
+names(market_data) <- lapply(symbols, function(x) paste(x, gsub(' ', '_', freq), sep = '_'))
 twsDisconnect(tws)
 
-# remove outliers
-dim(market_hour)
-market_hour <- remove_outlier_median(quantmod::OHLC(market_hour), quantmod::OHLC(market_day), median_scaler = 25)
-dim(market_hour)
+# remove outliers from intraday market data
+market_data <- lapply(market_data, function(x) {
+  remove_outlier_median(quantmod::OHLC(x), median_scaler = 25)
+  })
 
 
 
-# EXUBER ------------------------------------------------------------------
+# EXUBER STRATEGY ---------------------------------------------------------
 
 # parameters
 # adf_lag <- 1:5
@@ -164,49 +173,63 @@ table.CalendarReturns(strategies)
 
 
 
-# DPSEG --------------------------------------------------------------------
 
-# alpha
-dpseg_roll <- function(data) {
-  p <- estimateP(x=data$time, y=data$price, plot=FALSE)
-  # segs <- dpseg(data$time, data$price, jumps=jumps, P=p, type=type, store.matrix=TRUE, verb=FALSE)
-  # slope_last <- segs$segments$slope[length(segs$segments$slope)]
-  #return(slope_last)
+# DYNAMIC PROGRAMING SEGMENTS STRATEGY ------------------------------------
+
+
+# Alpha function
+dpseg_last <- function(data, p = NA) {
+  if (is.na(p)) {
+    p <- estimateP(x=data$time, y=data$price, plot=FALSE)
+  }
+  segs <- dpseg(data$time, data$price, jumps=FALSE, P=p, type='var', store.matrix=TRUE, verb=FALSE)
+  slope_last <- segs$segments$slope[length(segs$segments$slope)]
+  return(slope_last)
 }
 
-# daily roll
-dpseg_data <- cbind.data.frame(time = zoo::index(close_daily), price = coredata(close_daily))
-colnames(dpseg_data) <- c('time', 'price')
-dpseg_data$time <- as.numeric(dpseg_data$time)
-DT <- as.data.table(dpseg_data)
-roll_par <- data.table::frollapply(
-  x = dpseg_data,
-  n = 600,
-  FUN = function(x) {dpseg_roll(x)},
-  fill = NA,
-  align = 'right'
-)
+# Daily roll
+dpseg_roll <- function(data, rolling_window = 600) {
+  dpseg_data <- cbind.data.frame(time = zoo::index(data), price = Cl(data))
+  colnames(dpseg_data) <- c('time', 'price')
+  DT <- as.data.table(dpseg_data)
+  DT[, time := as.numeric(time)]
+  DT[,
+     slope := runner(
+       x = .SD,
+       f = dpseg_last,
+       k = rolling_window,
+       na_pad = TRUE
+     )]
+  results <- xts::xts(DT[, c(2, 3)], order.by = dpseg_data$time)
+  results <- na.omit(results)
+  return(results)
+}
+results_dpseg <- lapply(market_data, function(x) {
+  dpseg_roll(x, dpseg_rolling[1])
+  })
+
+# alpha execution
+alpha_dpseg <- function(x) {
+  x$returns <- (x$price - shift(x$price, 1L)) / shift(x$price, 1L)
+  x$sign <- ifelse(x$slope < 0, 0L, NA)
+  x$sign <- ifelse(x$slope > 0L & is.na(x$sign), 1L, x$sign)
+  print('Hold distribution')
+  print(table(x$sign))
+  x$returns_strategy <- x$returns * x$sign
+  x$sign <- shift(x$sign, 1L, type = 'lead')
+  x <- na.omit(x)
+  x
+}
+alpha_results <- lapply(results_dpseg, alpha_dpseg)
+names(alpha_results) <- unlist(lapply(symbols, function(x) paste(x, gsub(' ', '_', freq), sep = '_')))
 
 
-DT[,
-   slope := runner(
-     x = .SD,
-     f = dpseg_roll,
-     k = 600,
-     na_pad = TRUE
-   )]
-DT <- DT[!is.na(slope)]
+
+# CHOW TEST ---------------------------------------------------------------
 
 
-radf_daily <- lapply(1:5, function(adf_lag) {
-  frollapply_parallel(
-    y = zoo::coredata(close_daily),
-    n_cores = 7,
-    roll_window = rolling_window,
-    FUN = function(y_subsample) {
-      radf_buble_last(data = y_subsample,
-                      minw = exuber_minw,
-                      lag = adf_lag)
-    }
-  )})
-radf_d <- lapply(radf_daily, function(x) do.call(c, x))
+
+# BACKTEST ----------------------------------------------------------------
+
+charts.PerformanceSummary(alpha_results[[6]][, c('returns', 'returns_strategy')],
+                          main = names(alpha_results)[6])
