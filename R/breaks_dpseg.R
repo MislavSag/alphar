@@ -51,10 +51,13 @@ market_data <- lapply(market_data, function(x) {
 # choose best P value
 
 ## NOTE: dpseg is slower for many segments!
-x <- as.numeric(zoo::index(market_data[[2]]))[1:800]
-y <- zoo::coredata(market_data[[2]]$SPY.Close)[1:800]
-sp <- scanP(x=x, y=y, P=seq(-.01,.5,length.out=200), plot=TRUE)
-
+x <- as.numeric(zoo::index(market_data[[2]]))[1:500]
+y <- zoo::coredata(market_data[[2]]$SPY.Close)[1:500]
 p <- estimateP(x=x, y=y, plot=FALSE)
-segs <- dpseg(data$time, data$price, jumps=FALSE, P=p, type='var', store.matrix=TRUE, verb=FALSE)
-slope_last <- segs$segments$slope[length(segs$segments$slope)]
+segs <- dpseg(x, y, jumps=FALSE, P=0.1, type='cor', store.matrix=TRUE, verb=FALSE)
+plot(segs)
+lines(predict(segs),lty=2, lwd=3, col="yellow")
+movie(segs, format="gif", file.name="movie", ppath = 'C:/Users/Mislav/Documents',
+      frames=seq(1,length(x),3), delay=.3,res=50)
+
+

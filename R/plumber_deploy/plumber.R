@@ -69,10 +69,14 @@ function(x, min_d) {
 #* Alpha dpseg
 #* @param time Time se float
 #* @param price vector of prices
+#* @param p break-point penalty
+#* @param type_ type of scoring function
 #* @post /dpseg
-function(time, price) {
-  p <- estimateP(x=time, y=price, plot=FALSE)
-  segs <- dpseg(time, price, jumps=FALSE, P=p, type='var', store.matrix=TRUE, verb=FALSE)
+function(time, price, type_, p = NA) {
+  if (is.na(p) | is.null(p)) {
+    p <- estimateP(x=time, y=price, plot=FALSE)
+  }
+  segs <- dpseg(time, price, jumps=FALSE, P=p, type=type_, store.matrix=TRUE, verb=FALSE)
   slope_last <- segs$segments$slope[length(segs$segments$slope)]
   return(slope_last)
 }
