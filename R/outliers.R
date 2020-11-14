@@ -21,6 +21,8 @@ remove_outlier_median <- function(ohlcv, median_scaler = 20) {
   # con if intraday data
   ohlcv_daily <- xts::to.daily(ohlcv)
   ohlcv_daily <- ohlcv_daily[unique(as.Date(zoo::index(ohlcv)))]
+  ohlcv_daily <- Cl(ohlcv_daily)
+
   daily_diff <- na.omit(abs(diff(ohlcv_daily)) + 0.05) * median_scaler
   daily_diff <- data.frame(date = as.Date(as.character(zoo::index(daily_diff))), zoo::coredata(daily_diff))
   data_test <- na.omit(diff(ohlcv))
@@ -28,9 +30,9 @@ remove_outlier_median <- function(ohlcv, median_scaler = 20) {
   data_test$date <- as.Date(data_test$date_time)
   data_test_diff <- base::merge(data_test, daily_diff, by = 'date', all.x = TRUE, all.y = FALSE)
   indexer <- abs(Cl(data_test_diff)[1]) < abs(Cl(data_test_diff)[2]) &
-    abs(Op(data_test_diff)[1]) < abs(Op(data_test_diff)[2]) &
-    abs(Hi(data_test_diff)[1]) < abs(Hi(data_test_diff)[2]) &
-    abs(Lo(data_test_diff)[1]) < abs(Lo(data_test_diff)[2])
+    abs(Op(data_test_diff)) < abs(Cl(data_test_diff)[2]) &
+    abs(Hi(data_test_diff)) < abs(Cl(data_test_diff)[2]) &
+    abs(Lo(data_test_diff)) < abs(Cl(data_test_diff)[2])
   ohlcv <- ohlcv[which(indexer), ]
-  ohlcv
+  return(ohlcv)
 }
