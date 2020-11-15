@@ -19,7 +19,7 @@ import_mysql <- function(contract, save_path=getwd(), ...) {
   con <- DBI::dbConnect(...)
 
   # query table
-  market_data <- DBI::dbGetQuery(con, 'SELECT * FROM SPY_IB;')
+  market_data <- DBI::dbGetQuery(con, paste0('SELECT * FROM ', contract, ';'))
 
   # close connection
   dbDisconnect(con)
