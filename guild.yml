@@ -1,0 +1,13 @@
+r:
+  description: Backtesting with BackCUSUM estimation of volatility structural breaks
+  exec: Rscript .guild/sourcecode/R/volatilityR.R ${flag_args}
+  # exec: C:/Users/Mislav/Documents/GitHub/alphar/R/volatilityR.R ${flag_args}
+  flags:
+    contract: 'SPY5'
+    upsample: FALSE
+    std_window: 30
+    backcusum_rolling_window: 100
+    backcusum_type: 'bq'
+  output-scalars:
+    cumulatice_return: 'cumulative_return: (\value)'
+    sharpe_ratio: 'sharpe_ratio: (\value)'

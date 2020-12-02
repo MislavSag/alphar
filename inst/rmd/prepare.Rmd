@@ -1,0 +1,236 @@
+---
+title: "prepare"
+author: "Contentio d.o.o."
+date: '12 11 2020 '
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+```
+
+
+```{r setup}
+library(data.table)
+library(xts)
+library(quantmod)
+library(fmlr)
+library(tseries)
+library(data.table)
+library(reticulate)
+library(here)
+library(future.apply)
+source(here("R", "import_data.R"))
+source(here("R", "features.R"))
+source(here("R", "outliers.R"))
+source(here("R", "parallel_functions.R"))
+source(here("R", "execution.R"))
+# python packages
+py <- reticulate::use_python('C:/ProgramData/Anaconda3')
+```
+
+
+```{python}
+import pandas as pd
+import mlfinlab as ml
+```
+
+
+```{r}
+# for performance
+plan(multiprocess)
+```
+
+
+```{r}
+# Import
+market_data <- import_mysql(
+  contract = 'SPY5',
+  save_path = 'D:/market_data/usa/ohlcv',
+  trading_days = TRUE,
+  upsample = FALSE,
+  RMySQL::MySQL(),
+  dbname = 'odvjet12_market_data_usa',
+  username = 'odvjet12_mislav',
+  password = 'Theanswer0207',
+  host = '91.234.46.219'
+)
+```
+
+
+```{r}
+# Remove outliers
+market_data <- remove_outlier_median(market_data, median_scaler = 25)
+
+# Add features
+market_data <- add_features(market_data)
+
+# Remove constant columns (from https://stackoverflow.com/questions/15068981/removal-of-constant-columns-in-r)
+market_data <- market_data[,!apply(market_data, MARGIN = 2, function(x) max(x, na.rm = TRUE) == min(x, na.rm = TRUE))]
+```
+
+
+## Volatility measures
+
+
+
+## BackCUSUM
+
+```{r}
+# backcusum parameters
+backcusum_rolling_window <- 100
+
+# backcusum roll
+bc_greater <- slider_parallel(
+  .x = as.data.table(market_data),
+  .f =   ~ {
+    backCUSUM::BQ.test(.$std_10 ~ 1, alternative = "greater")
+  },
+  .before = backcusum_rolling_window - 1,
+  .after = 0L,
+  .complete = TRUE,
+  n_cores = -1
+)
+bc_less <- slider_parallel(
+  .x = as.data.table(market_data),
+  .f =   ~ {
+    backCUSUM::BQ.test(.$std_10 ~ 1, alternative = "less")
+  },
+  .before = backcusum_rolling_window - 1,
+  .after = 0L,
+  .complete = TRUE,
+  n_cores = -1
+)
+```
+
+
+## Alpha side
+
+```{r}
+# Extract value
+bc_rejection_greater <- unlist(lapply(bc_greater, function(x) x[['rejection']][4]))
+bc_rejection_less <- unlist(lapply(bc_less, function(x) x[['rejection']][4]))
+
+# Subsample market data and add backcusum test rejections
+market_data_sample <- market_data[(nrow(market_data) - length(bc_greater_rejection) + 1):nrow(market_data),]
+market_data_sample <- cbind.xts(market_data_sample, bc_rejection_greater = bc_rejection_greater, bc_rejection_less = bc_rejection_less)
+market_data_sample$rejection_test <- market_data_sample$bc_rejection_greater | market_data_sample$bc_rejection_less
+market_data_sample$return_sum <- roll::roll_sum(market_data_sample$returns, width = 3)
+market_data_sample$side <- create_signsC_2(market_data_sample$rejection_test, market_data_sample$return_sum)
+market_data_sample$side <- ifelse(market_data_sample$side == 0, -1, market_data_sample$side)
+market_data_sample <- na.omit(market_data_sample)
+table(market_data_sample$side)
+```
+
+
+## Filtering
+
+```{r}
+# Filter data
+# cusum_events <- zoo::index(market_data_sample[market_data_sample$rejection_test == TRUE, ])
+cusum_events <- zoo::index(market_data_sample[market_data_sample$side == -1, ])
+
+
+# Prepare for python
+data_ml_py <- as.data.table(market_data_sample)
+data_ml_py$target <- data_ml_py$close * 0.005
+```
+
+
+## Tripple barrier labeling
+
+```{python}
+# Convert R objects to python objects
+data_py = pd.DataFrame(r.data_ml_py)
+data_py.index = r.data_ml_py['index']
+data_py = data_py.drop(columns=['index'])
+cusum_events_py = r.cusum_events
+
+# Compute vertical barrier
+vertical_barriers = ml.labeling.add_vertical_barrier(t_events=data_py.index, close=data_py.close, num_days=1)
+
+# Labeling
+pt_sl = [1, 1]
+min_ret = 0.005
+triple_barrier_events = ml.labeling.get_events(close=data_py.close,
+                                               t_events=cusum_events_py,
+                                               pt_sl=pt_sl,
+                                               target=data_py['target'],
+                                               min_ret=min_ret,
+                                               num_threads=1,
+                                               vertical_barrier_times=False,
+                                               side_prediction=data_py.side)
+labels = ml.labeling.get_bins(triple_barrier_events, data_py['close'])
+labels.side.value_counts()
+```
+
+
+```{python}
+triple_barrier_events_ = triple_barrier_events.copy()
+triple_barrier_events_.side = 1
+labels = ml.labeling.get_bins(triple_barrier_events_, data_py['close'])
+labels.head()
+```
+
+
+```{r}
+vertical_barriers_r <- function(t_events, close, num_days, num_hours, num_minutes, num_seconds) {
+  # order events
+  t0 <- t_events[order(t_events)]
+  
+  # turn numeric to timedelta
+  num_days <- lubridate::days(num_days)
+  num_hours <- lubridate::hours(num_hours)
+  num_minutes <- lubridate::minutes(num_minutes)
+  num_seconds <- lubridate::seconds(num_seconds)
+  
+  # define timedelta
+  t1 <- t0 + num_days + num_hours + num_minutes + num_seconds
+  
+  # Find index to closest to vertical barrier
+  nearest_index <- vapply(t1, function(x) which.min(abs(x - zoo::index(close))), numeric(1))
+  
+  # Exclude indexes which are outside the range of close price index
+  nearest_index = nearest_index[nearest_index < length(close)]
+  
+  # Find price index closest to vertical barrier time stamp
+  nearest_timestamp = close[nearest_index]
+  filtered_events = t0[1:length(nearest_index)]
+  
+  # convert to data frime
+  vertical_barriers = cbind.data.frame(t0 = filtered_events, t1 = zoo::index(nearest_timestamp))
+  return(vertical_barriers)
+}
+
+vb <- vertical_barriers_r(cusum_events, market_data_sample$close, 1, 0, 0, 0)
+head(vb)
+```
+
+
+```{python}
+labels.head(10)
+triple_barrier_events.head(10)
+labels.tail(10)
+```
+
+```{python}
+from sklearn.metrics import roc_curve, classification_report, confusion_matrix, accuracy_score
+
+primary_forecast = pd.DataFrame(labels['bin'])
+primary_forecast['pred'] = 1
+primary_forecast.columns = ['actual', 'pred']
+
+# Performance Metrics
+actual = primary_forecast['actual']
+pred = primary_forecast['pred']
+print(classification_report(y_true=actual, y_pred=pred))
+
+print("Confusion Matrix")
+print(confusion_matrix(actual, pred))
+
+print('')
+print("Accuracy")
+print(accuracy_score(actual, pred))
+```
+
