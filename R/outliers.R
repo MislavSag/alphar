@@ -8,9 +8,13 @@
 #' @export
 #'
 #' @import xts
+#' @import quantmod
 #'
 #' @examples
-remove_outlier_median <- function(ohlcv, median_scaler = 20) {
+remove_outlier_median <- function(data, median_scaler = 20) {
+
+  # extract ohlcv from data
+  ohlcv <- quantmod::OHLC(data)
 
   # if data is higher than daily don't remove outliers
   if (deltat(ohlcv) >= 3600) {
@@ -34,5 +38,11 @@ remove_outlier_median <- function(ohlcv, median_scaler = 20) {
     abs(Hi(data_test_diff)) < abs(Cl(data_test_diff)[2]) &
     abs(Lo(data_test_diff)) < abs(Cl(data_test_diff)[2])
   ohlcv <- ohlcv[which(indexer), ]
-  return(ohlcv)
+
+  # merge with data
+  data <- merge(ohlcv, data)
+  data <- na.omit(data)
+  data <- data[, -which(grepl('\\.1', colnames(data)))]
+
+  return(data)
 }

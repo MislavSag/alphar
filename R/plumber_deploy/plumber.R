@@ -80,3 +80,65 @@ function(time, price, type_, p = NA) {
   slope_last <- segs$segments$slope[length(segs$segments$slope)]
   return(slope_last)
 }
+
+#* Alpha backcusum volatility
+#* @param time Time se float
+#* @param price vector of prices
+#* @param critical_value Critical value for backCUSUM detector
+#* @param method Look help for spotVol in highfrequency package
+#* @param marketOpen_ Look help for spotVol in highfrequency package
+#* @param marketClose_ Look help for spotVol in highfrequency package
+#* @param tz_ Look help for spotVol in highfrequency package
+#* @post /backcusumvol
+function(time, price, critical_value = 0.4, method_ = 'detPer', k_time = 10,
+         marketOpen_ = '09:30:00', marketClose_ = '16:00:00', tz_ = 'America/New_York') {
+
+  # construct xts xts
+  time <- anytime::anytime(time)
+  x <- xts::xts(unlist(price), order.by = unlist(time), tzone = tz_)
+
+  # volatility
+  vol1 <- tryCatch(
+    highfrequency::spotVol(
+      x,
+      method = method_,
+      on = 'minutes',
+      k = k_time,
+      marketOpen = marketOpen_,
+      marketClose = marketClose_,
+      tz = tz_),
+    error = function(e) print(e)
+    )
+  if (exists('message', vol1)) {
+    return(vol1$message)
+  } else {
+    vol1 <- vol1$spot
+    vol1 <- na.omit(vol1)
+    vol1 <- vol1[1:100]
+    bq <- backCUSUM::BQ.test(vol1 ~ 1, alternative = "greater")
+    value_test <- purrr::pluck(bq, 'detector')
+    value_test <- tail(value_test, 1)
+    if (value_test > critical_value) {
+      alpha <- 0
+    } else {
+      alpha <- 1
+    }
+  }
+  return(alpha)
+}
+
+#* BackCUSUM
+#* @param x vector of values
+#* @param alternative look at BQ.test docs
+#* @post /backcusum
+function(x, rejection_value_down = 0.5, rejection_value_up = 2) {
+
+  bc_greater <- backCUSUM::BQ.test(x ~ 1, alternative = "greater")
+
+  if (bc_greater[['statistic']] > rejection_value_down & bc_greater[['statistic']] < rejection_value_up) {
+    alpha_sign <- 0
+  } else {
+    alpha_sign <- 1
+  }
+  return(alpha_sign)
+}
