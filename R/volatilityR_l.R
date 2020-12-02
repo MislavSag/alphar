@@ -28,7 +28,7 @@ upsample = FALSE  # e.g. 10 to aggregate 5 min to 10 min data
 # Import data
 market_data <- import_mysql(
   contract = contract,
-  save_path = 'D:/market_data/usa/ohlcv',
+  save_path = 'D:/LUKA/Academic/aplharDta',
   trading_days = TRUE,
   upsample = upsample,
   RMySQL::MySQL(),
@@ -40,7 +40,7 @@ market_data <- import_mysql(
 
 vix <- import_mysql(
   contract = 'VIX5',
-  save_path = 'D:/market_data/usa/ohlcv',
+  save_path = 'D:/LUKA/Academic/aplharDta',
   trading_days = TRUE,
   upsample = upsample,
   RMySQL::MySQL(),
