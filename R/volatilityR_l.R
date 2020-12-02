@@ -6,10 +6,10 @@ library(quantmod)
 library(future.apply)
 library(anytime)
 library(PerformanceAnalytics)
-source('C:/Users/Mislav/Documents/GitHub/alphar/R/parallel_functions.R')
-source('C:/Users/Mislav/Documents/GitHub/alphar/R/outliers.R')
-source('C:/Users/Mislav/Documents/GitHub/alphar/R/import_data.R')
-source('C:/Users/Mislav/Documents/GitHub/alphar/R/execution.R')
+source('./R/parallel_functions.R')
+source('./R/outliers.R')
+source('./R/import_data.R')
+source('./R/execution.R')
 
 
 
