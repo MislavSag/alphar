@@ -21,6 +21,12 @@ frollapply_parallel <- function(y, n_cores = 4, roll_window = 600, FUN, fill = N
   # measure time
   start <- Sys.time()
 
+  # max # cluster
+  if (n_cores == -1) {
+    n_cores <- as.integer(length(y) / max(roll_window))
+  }
+  print(paste0('Number of subsamples (max used cores): ', n_cores))
+
   # divide vector to subvectors
   seq_index <- as.integer(seq(1, length(y), length.out = n_cores))
 

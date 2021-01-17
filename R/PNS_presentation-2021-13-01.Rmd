@@ -1,0 +1,620 @@
+---
+title: "Prezentacija testiranih strategija trgovanja"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+
+### UVOD
+
+Od posljednjeg sastanka naglasak sam stavio na procjenu tržišnog rizika, to jest rizika naglog pada vrijednosti dionice (SPY-a). Proučavao sam relevantnu literaturu (znanstvene radove i knjige) i pokušao na temelju njih i vlastite intuicije razviti profitabilne strategije. U nastavku dajem prikaz većine strategija koje sam probao.
+
+
+### ZAŠTITA PUT OPCIJOM
+
+Ova strategija je kopija stretegije dostupne na ovom [videu](https://www.youtube.com/watch?v=Lq-Ri7YU5fU). Općenito, kupnjom put opcije štitimo se od rizika pada cijena. Konstantna zaštita put opcijom je relativno skupa. Ideja je stoga zaštiti se put opcijom kada je tržišni rizik visok. Točnije kupujemo put opciju kada VIX "Volatility index" prijeđe određenu razinu (npr. 25). Volatility index se računa kao 
+
+$$VI = (VIX_t - min(VIXhistory_{low})) / (max(VIXhistory_{high} - min(VIXhistory_{low}))))$$
+
+Intuitivno, kupujemo put opciju kada je vrijednost VIX-a visoka. Što je visoko određeno je indeksom volatilnosti.
+
+Strategija je direktno razvijena u QC okruženju. Naziv projekta je “Put Option Protection”.
+
+Strategija ostvaruje dobre rezultate za razdoblje COVID krize, ali ne i za razdoblje Velike recesije. U najdužem periodu promatranja (2006-2020) strategija donosi prinos od **160%** dok strategija 'Kupi drži' donosi prinos od **219%**.
+
+Bolje rezultate moguće je postići uglađivanjem parametara:
+
+```{python eval=FALSE}
+self.DaysBeforeExp = 2 # number of days before expiry to exit
+self.DTE = 25 # target days till expiration
+self.OTM = 0.01 # target percentage OTM of put
+self.lookbackIV = 300 # lookback length of IV indicator
+self.IVlvl = 0.5 # enter position at this lvl of IV indicator
+self.percentage = 0.9 # percentage of portfolio for underlying asset
+self.options_alloc = 90 # 1 option for X num of shares (balanced would be 100)
+```
+
+
+### VIX STRATEGIJE
+
+Strategija je slična prethodnoj u smislu da koristi VIX kao input varijablu za mjerenje rizika. Međutim umjesto VI indeksa, izlazak iz pozicije i ulazak u poziciju se određuje iz stope rasta VIX indeksa ili iz percentila za prethodnih X razdoblja. Strategija je razvijena unutar QC okruženja na dnevnim podacima.
+
+Navodim primjer jedne strategije.Na početku kupujemo SPY. Prodajemo ako su zadovoljena dva uvjeta: vrijednost VIX-a je veća od 20 i stopa rasta VIX-a u prethodnom razdoblju iznosi barem 5%. Ponovno kupujemo SPY kada stopa rata VIX-a dosegne -3%.
+
+Bolje rezultate moguće je postići uglađivanjem parametara:
+
+```{python eval=FALSE}
+vix_level = 20 # vrijendot VIX-a nakon kojeg slijedi potencijalna prodaja
+growth_rate_sell = 0.05  # stopa rasta koju VIX mora doseći da bi se izašlo iz pozicije
+growth_rate_buy = -0.03  # stopa rasta koju VIX mora doseći da bi se ušlo u poziciju
+```
+
+Na prethodnoj prezentaciji sam pokazivao slične strategije s VIX-om, koje prodaju poziciju ako VIX naraste iznad određenog percentila vrijednosti (npr. iznad 90% percentila). Također sam pokazao i varijantu gdje se na VIX primjenjuje regresijska analiza i onda se koriste regresijski koeficijenti za analizu.
+
+Nijedna od VIX strategija nije pokazala zadovoljavajuće rezultate.
+
+
+# VAR (ES) STRATEGIJE
+
+Dvije su osnovne mjere (tržišnog) rizika u području kvantitativnog *risk managementa*:
+  
+  1. VaR (Value at risk) - vjerojatnost (alpha) da gubitak bude veći od x iznosi 5%. Percentil distribucije.
+  2. ES (Expected Shortfall) - očekivani gubitak za vrijednosti X > VaR.
+
+Ove mjere ću detaljnije objasniti za vrijeme prezentacije
+
+Isprobao sam mnoštvo strategije na temelju ove dvije mjere. Prikazat ću samo neke varijacije koje su bile profitabilne barem u nekim varijacijama.
+
+
+### PRIPREMA
+
+Učitavam potrebne pakete:
+
+```{r warning=FALSE,message=FALSE}
+library(data.table)
+library(purrr)
+library(ggplot2)
+library(quantmod)
+library(future.apply)
+library(PerformanceAnalytics)
+library(roll)
+library(TTR)
+library(GAS)
+library(parallel)         # for the GASS package
+library(BatchGetSymbols)  # import data
+
+source('C:/Users/Mislav/Documents/GitHub/alphar/R/parallel_functions.R')
+source('C:/Users/Mislav/Documents/GitHub/alphar/R/outliers.R')
+source('C:/Users/Mislav/Documents/GitHub/alphar/R/import_data.R')
+source('C:/Users/Mislav/Documents/GitHub/alphar/R/features.R')
+
+# performance
+plan(multiprocess(workers = availableCores() - 8))
+```
+
+Učitavam podatke potrebne za analizu:
+
+```{r warning=FALSE,message=FALSE}
+
+# PARAMETRI
+contract = 'SPY'
+freq = 5  # 1 is one minute, 60 is hour, 480 is day etc
+upsample = FALSE
+add_fundamentals = FALSE
+add_vix = FALSE
+
+# PODACI
+if (freq < 60) {
+  paste0(contract, freq)
+  # HFD
+  market_data <- import_mysql(
+    contract = paste0(contract, freq),
+    save_path = 'D:/market_data/usa/ohlcv',
+    trading_days = TRUE,
+    upsample = upsample,
+    RMySQL::MySQL(),
+    dbname = 'odvjet12_market_data_usa',
+    username = 'odvjet12_mislav',
+    password = 'Theanswer0207',
+    host = '91.234.46.219'
+  )
+  vix <- import_mysql(
+    contract = paste0(contract, freq),
+    save_path = 'D:/market_data/usa/ohlcv',
+    trading_days = TRUE,
+    upsample = upsample,
+    RMySQL::MySQL(),
+    dbname = 'odvjet12_market_data_usa',
+    username = 'odvjet12_mislav',
+    password = 'Theanswer0207',
+    host = '91.234.46.219'
+  )
+} else if (freq == 480) {
+  market_data <- BatchGetSymbols(tickers = contract, first.date = '2000-01-01')[[2]]
+  market_data <- xts::xts(market_data[, c(1:6, 9, 10)], order.by = market_data$ref.date)
+  market_data$returns <- market_data$ret.adjusted.prices
+} else {
+  # LFD
+  market_data <- import_ib(
+    contract = contract,
+    frequencies = ifelse(freq == 60, '1 hour', '1 day'),
+    duration = '30 Y',
+    type = 'equity',
+    trading_days = FALSE,
+    what_to_show = 'TRADES'
+  )
+  colnames(market_data) <- c('open', 'high', 'low', 'close', 'volume', 'WAP', 'hasGaps', 'count')
+  vix <- import_ib(
+    contract = 'VIX',
+    frequencies = ifelse(freq == 60, '1 hour', '1 day'),
+    duration = '30 Y',
+    type = 'index',
+    trading_days = FALSE
+  )
+  colnames(vix) <- c('open', 'high', 'low', 'close', 'volume', 'WAP', 'hasGaps', 'count')
+}
+
+# FUNDAMENTALS
+if (add_fundamentals) {
+  fundamentals <- simfinapi::sfa_get_statement(Ticker = contract,
+                                               statement = 'all',
+                                               period = 'quarters',
+                                               ttm = TRUE,
+                                               shares = TRUE,
+                                               api_key = '8qk9Xc9scFc0Rbpfrx6PLdaiomvi7Dxc')
+  if (!is.null(fundamentals)) {
+    fundamentals <- janitor::clean_names(fundamentals)
+    fundamentals <- fundamentals[, .(publish_date, shares, sales_per_share)]
+    fundamentals <- xts::xts(fundamentals[, 2:ncol(fundamentals)], order.by = as.POSIXct(fundamentals$publish_date))
+    market_data <- merge(market_data, fundamentals, all = TRUE)
+    market_data$sales_per_share <- zoo::na.locf(market_data$sales_per_share)
+    market_data <- market_data[!is.na(market_data$close), ]
+    market_data$ps <- market_data$close / market_data$sales_per_share
+  }
+}
+
+```
+Čišćenje podataka:
+
+```{r warning=FALSE,message=FALSE}
+
+# Remove outliers
+market_data <- remove_outlier_median(market_data, median_scaler = 25)
+
+# merge market data and VIX
+if (add_vix) {
+  market_data <- merge(market_data, vix[, 'close'], join = 'left')
+  colnames(market_data)[ncol(market_data)] <- 'vix'
+  market_data <- na.omit(market_data)
+}
+
+# Add features
+market_data <- add_features(market_data)
+
+# Remove NA values
+market_data <- na.omit(market_data)
+head(market_data)
+```
+
+
+
+### DINAMIČNA VAR (ES) STRATEGIJA
+
+ES se smatra boljom mjerom rizika od VaR-a pa ću u svim primjerima koristiti ES. Inače sam u raznim scenarijima koristio i VaR, ali su se u većini slučajeva rezultati pokazali boljim sa ES mjerom rizika.
+
+```{r warning=FALSE,message=FALSE}
+es_roll <- function(data, var = 'close', window_size = 100) {
+  columns <- c('index', var)
+  DT <- as.data.table(data)[, columns, with = FALSE]
+  colnames(DT) <- c('time', 'price')
+  DT <- DT[, time := as.numeric(time)]
+  roll_f <- slider_parallel(
+    .x = DT,
+    .f =   ~ {
+      PerformanceAnalytics::ETL(.x$price,
+                                p = 0.95,
+                                method = 'modified',
+                                clean = 'none',
+                                portfolio_method = 'single')
+    },
+    .before = window_size - 1,
+    .after = 0L,
+    .complete = TRUE,
+    n_cores = -1
+  )
+  roll_f <- unlist(roll_f)
+  roll_f <- c(rep(NA, window_size - 1), roll_f)
+  return(roll_f)
+}
+es_rolled <- es_roll(market_data, 'returns', 500)  # 500 is 5 day ES
+
+# results
+results_es_roll <- cbind(market_data, es_rolled)
+sum(is.na(results_es_roll$es_rolled))  # number of NA's
+results_es_roll$es_rolled <- na.locf(results_es_roll$es_rolled)
+results_es_roll$es_rolled_sma_short <- TTR::SMA(results_es_roll$es_rolled, 50)
+results_es_roll$es_rolled_sma_long <- TTR::SMA(results_es_roll$es_rolled, 5000)
+results_es_roll <- na.omit(results_es_roll)
+plot(results_es_roll[, c('es_rolled', 'es_rolled_sma_short', 'es_rolled_sma_long')] * -1)
+
+```
+
+Prcojenjeni ES možemo koristiti na razne načine. Ja sam isprobao:
+
+1. Prodaja dionice kada ES prijeđe određeni threshold.
+2. Prodaja pod 1. + skraćeni SMA veći od dugod SMA.
+3. Prodaja kada ES prijeđe određeni povijesni kvantil.
+
+Slijede rezultati pojedinih backtestova.
+
+1. Backtest theshold
+
+```{r}
+
+# backtest threshold
+indicator <- as.vector(zoo::coredata(results_es_roll$es_rolled * -1))
+side <- vector(mode = 'integer', length = length(indicator))
+for (i in 1:length(indicator)) {
+  if (i == 1 || is.na(indicator[i-1])) {
+    side[i] <- NA
+  } else if (indicator[i-1] > 0.007) {  # izabrao doar parametar nakon nekoliko pkusaja
+    side[i] <- 0
+  } else {
+    side[i] <- 1
+  }
+}
+table(side)
+results_es_roll$side <- side
+results_es_roll$returns_strategy <- results_es_roll$returns * results_es_roll$side
+charts.PerformanceSummary(results_es_roll[, c('returns', 'returns_strategy')], plot.engine = 'ggplot2')
+
+```
+
+2. Backtest SMA
+
+```{r}
+
+# backtest SMA
+indicator <- as.vector(zoo::coredata(results_es_roll$es_rolled * -1))
+indicator_short <- SMA(indicator, 100)
+indicator_long <- SMA(indicator, 3000)
+side <- vector(mode = 'integer', length = length(indicator))
+for (i in 1:length(indicator)) {
+  if (i == 1 || is.na(indicator_long[i-1])) {
+    side[i] <- NA
+  } else if (indicator_short[i-1] > 0.004 & indicator_short[i-1] > indicator_long[i-1]) {
+    side[i] <- 0
+  } else {
+    side[i] <- 1
+  }
+}
+table(side)
+results_es_roll$side <- side
+results_es_roll$returns_strategy <- results_es_roll$returns * results_es_roll$side
+charts.PerformanceSummary(results_es_roll[, c('returns', 'returns_strategy')], plot.engine = 'ggplot2')
+
+```
+
+3. Backtest kvantil
+
+```{r}
+# backtest SMA
+indicator <- as.vector(zoo::coredata(results_es_roll$es_rolled * -1))
+indicator_quantil <- roll::roll_quantile(indicator, 255*4, p = 0.95)
+side <- vector(mode = 'integer', length = length(indicator))
+for (i in 1:length(indicator)) {
+  if (i == 1 || is.na(indicator_quantil[i-1])) {
+    side[i] <- NA
+  } else if (indicator[i-1] > indicator_quantil[i-1]) {
+    side[i] <- 0
+  } else {
+    side[i] <- 1
+  }
+}
+table(side)
+results_es_roll$side <- side
+results_es_roll$returns_strategy <- results_es_roll$returns * results_es_roll$side
+charts.PerformanceSummary(results_es_roll[, c('returns', 'returns_strategy')], plot.engine = 'ggplot2')
+```
+
+### GENERALIZED AUTOREGRESSIVE SCORE ES (VAR) MODELS
+
+Ova strategija se temelji na [sljedećem radu](https://journal.r-project.org/archive/2018/RJ-2018-064/RJ-2018-064.pdf). Citat od autora:
+
+> TheGASpackage of Catania et al. (2016) provides a complete framework for modeling, estimatingand predicting time series processes for which the time variation in the parameters is driven by thescore of the conditional density function.
+...
+The economic relevance of this topic follows partly from the Basel Accords (currently the Basel IIIAccords), which impose that banks and financial institutions have to meet capital requirements, andmust rely on state-of-the-art risk systems. In particular, they must assess the uncertainty about thefuture values of their portfolios and estimate the extent and the likelihood of potential losses usinga risk measure. Nowadays, VaR and ES risk measures are the standards 
+
+Ukratko koristeći GAS pristup, predviđaju se VaR i ES mjere rizika za jedan dan unaprijed. Zatim se donose odluke o kupnji ili prodaji.
+
+Prijeđimo odmah na kod:
+ - učitani su tržišni podaci s dnevnom frekvencijom
+ - svaka 2 dana je procijenjen GAS model
+ - izračunate su ES i VaR mjere
+ - podaci su spojedni s početnim tržišnim podacima
+
+```{r}
+
+# PARAMETRI
+contracts = c('SPY')
+distributions <- c('sstd')
+scale_type <- c("Identity")  # , "Inv", "InvSqrt"
+insample_length <- c(800, 1200)
+refit_every <- 20
+
+
+# import data
+market_data_gas <- BatchGetSymbols(tickers = contracts, first.date = '1991-01-01')[[2]]
+market_data_gas$returns <- market_data_gas$ret.adjusted.prices
+market_data_gas <- na.omit(market_data_gas)
+
+# specification of general autoregresive scoring model
+estimate <- function(data, ticker = 'SPY', target = 'returns',
+                     dist = 'sstd', scale_type = 'Identity',
+                     insample_length = 1000) {
+
+  # choose ticker
+  data <- data[data$ticker == ticker, ]
+
+  # gas apec
+  GASSpec = UniGASSpec(
+    Dist = dist,
+    ScalingType = scale_type,
+    GASPar = list(location = TRUE, scale = TRUE, skewness = TRUE, shape = TRUE))
+
+  # Perform 1-step ahead rolling forecast with refit
+  cluster <- makeCluster(25)
+  Roll <- UniGASRoll(
+    xts::xts(data[, target], order.by = data$ref.date),
+    GASSpec,
+    Nstart = insample_length,
+    RefitEvery = refit_every,
+    RefitWindow = c("moving"),
+    cluster = cluster)
+  stopCluster(cluster)
+  rm("cluster")
+
+  # forecasts_gas <- getForecast(Roll)
+  alphas <- c(0.01, 0.05)
+  var_gas <- quantile(Roll, probs = alphas)  # VaR
+  colnames(var_gas) <- paste0('var_gas_', as.character(alphas * 100))
+  es_gas <- GAS::ES(Roll, probs = alphas)
+  colnames(es_gas) <- paste0('es_gas_', as.character(alphas * 100))
+
+  # merge to market_data
+  data <- cbind(data, rbind(matrix(NA, insample_length, length(alphas)), var_gas))
+  data <- cbind(data, rbind(matrix(NA, insample_length, length(alphas)), es_gas))
+  data
+}
+
+# estimate over all prameters
+vectors <- expand.grid(contracts, distributions, scale_type, insample_length, stringsAsFactors = FALSE)
+estimated <- purrr::pmap(
+  .l = vectors,
+  .f = ~ {estimate(market_data_gas, ticker = ..1, dist = ..2, scale_type = ..3, insample_length = ..4)}
+)
+names(estimated) <- apply(vectors, 1, paste, collapse = '_')
+
+```
+
+Slično kao i u prošloj strategiji, pravilo trgovanja će uključivati tri mjere:
+
+1. Prodaja dionice kada ES prijeđe određeni threshold.
+2. Prodaja pod 1. + skraćeni SMA veći od dugod SMA.
+3. Prodaja kada ES prijeđe određeni povijesni kvantil.
+
+U nastavku prikazujem rezultate za sva tri pristupa:
+
+3. Prodaja kada ES prijeđe određeni povijesni kvantil
+
+```{r}
+
+# parameters for backtest
+quantile_widths <- 255 * 1:8
+q <- c(0.001, seq(0.01, 0.05, 0.01))
+
+# backtest
+gas_backtest <- function(data, quantile_width = 255*4, quantile_p = 0.05) {
+
+  # trading rule
+  data <- na.omit(data)
+  indicator <- as.vector(zoo::coredata(data$es_gas_1))
+
+  # execute
+  indicator_quantile <- roll::roll_quantile(indicator,
+                                            width = quantile_width,
+                                            p = quantile_p,
+                                            min_obs = 10)
+  # indicator_2 <- as.vector(zoo::coredata(backtest_data$forecasts_gas_skewness))
+  side <- vector(mode = 'integer', length = length(indicator))
+  for (i in 1:length(indicator)) {
+    if (i == 1 || is.na(indicator_quantile[i-1])) {
+      side[i] <- NA
+    } else if (indicator[i-1] < indicator_quantile[i-1]) {
+      side[i] <- 0
+    } else {
+      side[i] <- 1
+    }
+  }
+  table(side, useNA = 'ifany')
+  returns_strategy <- xts::xts(data$returns * side, order.by = zoo::index(data))
+  perf <- na.omit(merge(data[, c('returns')], returns_strategy = returns_strategy))
+  # p <- charts.PerformanceSummary(perf, plot.engine = 'ggplot2')
+  return(perf)
+}
+
+# backtest
+gas_estimated_xts <- lapply(estimated, function(x) xts::xts(x[, -c(7, 8)], order.by = x$ref.date))
+argumenta_backtest <- expand.grid(names(gas_estimated_xts), quantile_widths, q, stringsAsFactors = FALSE)
+backtested <- purrr::pmap(
+  .l = argumenta_backtest,
+  .f = ~ {gas_backtest(gas_estimated_xts[[..1]], quantile_width = as.numeric(..2), quantile_p = as.numeric(..3))}
+)
+names(backtested) <- gsub('\\.', '', apply(argumenta_backtest, 1, paste, collapse = '_'))
+
+# save cumulative returns
+cum_returns <- do.call(cbind, backtested)
+cum_returns <- cum_returns[, c(1, seq(2, ncol(cum_returns), 2))]
+colnames(cum_returns) <- c('returns', names(backtested))
+cum_returns <- t(PerformanceAnalytics::Return.cumulative(cum_returns))
+vars <- data.frame(data.table::tstrsplit(rownames(cum_returns), split = '_'))
+colnames(vars) <- c('ticker', 'dist', 'type', 'window', 'quantile_win', 'p')
+cum_returns <- cbind(cum_returns, vars)
+cum_returns %>%
+  filter(ticker == 'SPY') %>%
+  arrange(desc(`Cumulative Return`))
+
+
+
+```
+
+```{r}
+# heatmap
+ggplot(cum_returns[2:nrow(cum_returns), ], aes(quantile_win, p, fill= `Cumulative Return`)) +
+  geom_tile()
+```
+
+```{r}
+ggplot(cum_returns[2:nrow(cum_returns), ], aes(window, quantile_win, fill= `Cumulative Return`)) +
+  geom_tile()
+```
+
+Pokazati rezultate lokalno: 
+
+> 'C:\Users\Mislav\Documents\GitHub\alphar\gas'
+
+
+### EVT STRATEGIJA
+
+EVT je skraćenica za *extreme value theory*. Teorija nastoji objasniti ponašanje (distribuciju) ekstremnih vrijednosti određenog stohastičkog procesa. Davno je ustanovljeno da prinosi na dionice ne prate normalnu distribuciju. Repovi empirijske distribucije su deblji repova normalne distribucije, Drugim riječima, ekstremni događaji su u stvarnom svijetu znatno učestaliji (vjerojatniji) nego što bi bili u 'normalnom' svijetu.
+
+Prema EVT, prinosi nakon određene razine prate generalnu Pareto distribuciju. Iako se po brzim testovima koje sam napravio čini da je ovo točno samo za prinose s dnevnom frekvencijom, koristio sam ovu teoriju za razvoj EVT strategije.
+
+Strategija se sastoji od sljedećih koraka:
+
+1. Na prozoru duljine 2000 (5-minutni podaci) procijeni se GDP distribucija.
+2. Na temelju 1. se izračuna očekivani gubitak (ES) iznad 0.9999 percentila.
+
+```{r}
+
+# parameters
+gpd_window_size <- 5000
+threshold <- 0.0015
+
+# roll gpd
+gpd_roll <- frollapply_parallel(
+  y = market_data$returns * -1,
+  n_cores = -1,
+  roll_window = gpd_window_size,
+  FUN = function(x) {
+    es <- evir::gpd(x, threshold = threshold, method = 'ml', information = 'expected')
+    es <- evir::riskmeasures(es, c(0.999))[, 3]
+  }
+)
+gpd_roll <- lapply(gpd_roll, function(x) x[!is.na(x)])
+gpd_roll <- unlist(purrr::flatten(gpd_roll))
+gpd_roll <- c(rep(NA, gpd_window_size-1), gpd_roll)
+gpd_roll <- cbind(market_data, es = gpd_roll)
+gpd_roll <- na.omit(gpd_roll)
+```
+
+```{r}
+# grafovi
+plot(gpd_roll[, c('es')])
+```
+
+Backtest threshold
+
+```{r}
+# backtet functoin
+backtest <- function(data, sma_long, sma_short) {
+
+  # trading rule
+  indicator <- as.vector(zoo::coredata(data$es))
+  # indicator_q <- roll::roll_quantile(indicator, 12*8*255*5, p = 0.90, min_obs = 12*8*255)
+  # indicator_sma_long <- as.vector(zoo::coredata(TTR::SMA(indicator, sma_long)))
+  # indicator_sma_short <- as.vector(zoo::coredata(TTR::SMA(indicator, sma_short)))
+  side <- vector(mode = 'integer', length = length(indicator))
+  for (i in 1:length(indicator)) {
+    if (i == 1 || is.na(indicator[i-1])) {
+      side[i] <- NA
+    } else if (indicator[i-1] > 0.015) {  
+      side[i] <- 0
+    } else {
+      side[i] <- 1
+    }
+  }
+
+  # merge
+  returns_strategy <- xts::xts(data$returns * side, order.by = zoo::index(data))
+  perf <- na.omit(merge(data[, 'returns'], returns_strategy = returns_strategy))
+  colnames(perf)[ncol(perf)] <- 'returns_strategy'
+  return(perf)
+}
+backtest_results <- backtest(gpd_roll, 400, 50)
+charts.PerformanceSummary(backtest_results, plot.engine = "ggplot2")
+
+```
+
+Backtest SMA cross
+
+```{r}
+# backtet functoin
+backtest <- function(data, sma_long, sma_short) {
+
+  # trading rule
+  indicator <- as.vector(zoo::coredata(data$es))
+  # indicator_q <- roll::roll_quantile(indicator, 12*8*255*5, p = 0.90, min_obs = 12*8*255)
+  indicator_sma_long <- as.vector(zoo::coredata(TTR::SMA(indicator, sma_long)))
+  indicator_sma_short <- as.vector(zoo::coredata(TTR::SMA(indicator, sma_short)))
+  side <- vector(mode = 'integer', length = length(indicator))
+  for (i in 1:length(indicator)) {
+    if (i == 1 || is.na(indicator_sma_long[i-1])) {
+      side[i] <- NA
+    } else if (indicator[i-1] > 0.015 & indicator[i-1] > indicator_sma_long[i-1]) {  
+      side[i] <- 0
+    } else {
+      side[i] <- 1
+    }
+  }
+  print(table(side))
+  
+  # merge
+  returns_strategy <- xts::xts(data$returns * side, order.by = zoo::index(data))
+  perf <- na.omit(merge(data[, 'returns'], returns_strategy = returns_strategy))
+  colnames(perf)[ncol(perf)] <- 'returns_strategy'
+  return(perf)
+}
+backtest_results <- backtest(gpd_roll, 5000, 20)
+charts.PerformanceSummary(backtest_results, plot.engine = "ggplot2")
+```
+
+
+
+### SPY VAR STRUCTURE
+
+Ideju za ovu strategiju dobio sam za vrijeme proučavanja EVT. Umjesto da poučavam SPY kao jednu dionicu analizirat ću sve dionice koje su sastavnice SPY-a. Strategija se sastoji od sljedećih koraka:
+
+1. Univerzum dionica čine sve sastavnice SP500. QC nema točan skup sastavnica, ali imaju skup QC500 koji vjerno odražava sastavnice SP500.
+2. Za svaku dionicu u univerzumu se izračunava 0.999 i 0.001 kvantil na temelju prethodne 4 godine.
+3. Za svaku dionicu se svaki sat provjerava je li ostvarila prinos manji od 0.001 percentila (vrlo veliki gubitak), vice versa.
+4. Zbrajaju se svi prinosi koji zadovoljavaju točku 3. 
+5. Izračunava se EWM na temelju 30 posljednih vrijednosti iz 4. čime se dobiva glavni indikator za trgovanje.
+6 Ako je vrijendost indikatora pod 5. veća od 0.5 prodajemo poziciju. Ponovno ulazimo u poziciju kada padne 0.5.
+
+Kod i rezultati su dostupni u QC projektu SP500 Var structure.
+
+
+### NOVI ALATI
+
+1. Quantconnect je uveo opciju optimizacije parametara. Izabire se jedan ili više parametara koji se žele optimizirati i veličina koja se optimizira (npr. Sharp ratio). Usluga se plaća po satu (cca 3$ po satu). Na kraju se pokazuju rezultati svih strategija s slikama i tablicama.
+2. SimFin+ omogućuje korištenje fundamentalnih podataka za samo 20$ mjesečno. dobar omjer cijene i kvalitete.
+
+
+### IDEJE ZA DALJE
+
+1. Uspostavit *data vendore* za Lean lokalno.
+2. Iskorisit dnevne poatke o drugim dionicama, istrenirat model na razdoblju 2000-2015 i testirat modele na razdoblju 2016-2020 na svim dionicama.
+

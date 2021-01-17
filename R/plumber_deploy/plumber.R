@@ -72,11 +72,8 @@ function(x, min_d) {
 #* @param p break-point penalty
 #* @param type_ type of scoring function
 #* @post /dpseg
-function(time, price, type_, p = NA) {
-  if (is.na(p) | is.null(p)) {
-    p <- estimateP(x=time, y=price, plot=FALSE)
-  }
-  segs <- dpseg(time, price, jumps=FALSE, P=p, type=type_, store.matrix=TRUE, verb=FALSE)
+function(time, price, type_, p) {
+  segs <- dpseg(time, price, jumps=FALSE, P=p, type=type_, verb=FALSE)
   slope_last <- segs$segments$slope[length(segs$segments$slope)]
   return(slope_last)
 }
@@ -131,14 +128,46 @@ function(time, price, critical_value = 0.4, method_ = 'detPer', k_time = 10,
 #* @param x vector of values
 #* @param alternative look at BQ.test docs
 #* @post /backcusum
-function(x, rejection_value_down = 0.5, rejection_value_up = 2) {
-
+function(x) {
   bc_greater <- backCUSUM::BQ.test(x ~ 1, alternative = "greater")
+  bc_greater[['statistic']]
+}
 
-  if (bc_greater[['statistic']] > rejection_value_down & bc_greater[['statistic']] < rejection_value_up) {
-    alpha_sign <- 0
-  } else {
-    alpha_sign <- 1
-  }
-  return(alpha_sign)
+#* Var
+#* @param x vector of returns
+#* @param prob p VaR
+#* @param type type of VaR
+#* @post /varrisk
+function(x, prob = 0.95, type = 'gaussian') {
+  returns <- na.omit((x - data.table::shift(x)) / data.table::shift(x))
+  PerformanceAnalytics::VaR(returns, p = prob, method = type, clean = 'none', portfolio_method = 'single')[1]
+}
+
+#* GAS ES
+#* @param x vector of returns
+#* @param dist distribution
+#* @param scaling_type scaling
+#* @param h horizont
+#* @param p threshold
+#* @post /gas
+function(x, dist = 'std', scaling_type = 'Identity', h = 1, p = 0.01) {
+  GASSpec <- GAS::UniGASSpec(
+    Dist = dist,
+    ScalingType = scaling_type,
+    GASPar = list(location = TRUE, scale = TRUE, skewness = TRUE, shape = TRUE))
+  Fit <- GAS::UniGASFit(GASSpec, x, Compute.SE = FALSE)
+  Forecast <- GAS::UniGASFor(Fit, H = h, ReturnDraws = TRUE)
+  GAS::quantile(Forecast, p)
+}
+
+#* General Pareto Distribution fit
+#* @param x vector of returns
+#* @param threshold return threshold
+#* @param method estimation method
+#* @param p apha for quantiles
+#* @post /gpd
+function(x, threshold = -0.001, method = 'pwm', p = 0.999) {
+  out <- evir::gpd(x, threshold = threshold, method = method)
+  out <- evir::riskmeasures(out, p)[1, 3]
+  return(out)
 }

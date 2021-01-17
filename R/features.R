@@ -1,25 +1,64 @@
 library(PerformanceAnalytics)
+library(data.table)
+library(roll)
+library(xts)
+library(future.apply)
+library(RollingWindow)
 
 
-add_features <- function(data) {
+# ohlc <- market_data
+
+add_features <- function(ohlc, window_sizes = c(5, 10, 20, 40, 80, 150, 300)) {
 
   # add ohlc transformations
-  data$high_low <- data$high - data$low
-  data$close_open <- data$close - data$open
-  data$close_ath <- cummax(data$close)
+  ohlc$hi_lo <- ohlc$high - ohlc$low
+  ohlc$cl_op <- ohlc$close - ohlc$open
+  ohlc$cl_ath <- cummax(ohlc$close)
 
   # returns
-  data$returns <- PerformanceAnalytics::Return.calculate(data$close)
-  data$returns_squared <- (data$returns)^2
+  ohlc$returns <- PerformanceAnalytics::Return.calculate(ohlc$close)
+  ohlc$returns_squared <- (ohlc$returns)^2
 
   # rolling volatility
-  data$std_5 <- roll::roll_sd(data$close, width = 5)
-  data$std_10 <- roll::roll_sd(data$close, width = 10)
-  data$std_20 <- roll::roll_sd(data$close, width = 20)
-  data$std_40 <- roll::roll_sd(data$close, width = 40)
-  data$std_80 <- roll::roll_sd(data$close, width = 80)
-  data$std_100 <- roll::roll_sd(data$close, width = 100)
-  data$std_100 <- roll::roll_sd(data$close, width = 200)
+  stds <- future.apply::future_sapply(
+    X = window_sizes,
+    FUN = function(x) roll::roll_sd(zoo::coredata(ohlc$returns), x)
+  )
+  colnames(stds) <- paste0('std_', window_sizes)
+  ohlc <- cbind(ohlc, stds)
 
-  return(data)
+  # Close-to-Close Volatility
+  n_ <- 5
+  ohlc$ctc <- volatility(OHLC(ohlc), n = n_, calc = "close")
+  ohlc$parkinson <- volatility(OHLC(ohlc), n = n_, calc = "parkinson")
+  ohlc$rogers <- volatility(OHLC(ohlc), n = n_, calc = "rogers.satchell")
+  ohlc$gkyz <- volatility(OHLC(ohlc), n = n_, calc = "gk.yz")
+  ohlc$yz <- volatility(OHLC(ohlc), n = n_, calc = "yang.zhang")
+
+  # skewness
+  skews <- future.apply::future_sapply(
+    window_sizes,
+    function(x) RollingWindow::RollingSkew(zoo::coredata(ohlc$returns), window = x, na_method = 'ignore')
+  )
+  colnames(skews) <- paste0('skewness_', window_sizes)
+  ohlc <- cbind(ohlc, xts::xts(skews, order.by = zoo::index(ohlc)))
+
+  # kurtosis
+  kurts <- future.apply::future_sapply(
+    window_sizes,
+    function(x)  RollingWindow::RollingKurt(zoo::coredata(ohlc$returns), window = x, na_method = 'ignore')
+  )
+  colnames(kurts) <- paste0('kurtosis_', window_sizes)
+  ohlc <- cbind(ohlc, xts::xts(kurts, order.by = zoo::index(ohlc)))
+
+  # Skewness-Kurtosis ratio
+  sk_ratio <- ohlc[, paste0('skewness_', window_sizes)] / ohlc[, paste0('kurtosis_', window_sizes)]
+  colnames(sk_ratio) <- paste0('skewness_kurtosis_', window_sizes)
+  ohlc <- cbind(ohlc, xts::xts(sk_ratio, order.by = zoo::index(ohlc)))
+
+  # standardized returns
+  ohlc$standardized_returns <- ohlc$returns / ohlc$std_5
+  ohlc$standardized_returns_squared <- (ohlc$standardized_returns)^2
+
+  return(ohlc)
 }
