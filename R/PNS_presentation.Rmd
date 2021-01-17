@@ -1,0 +1,302 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+
+### UČITAVANJE PAKETA
+
+
+Učitavam potrebne pakete i korisim sve 32 jezgre za zahtjevne operacije.
+
+```{r, warning=FALSE,message=FALSE}
+library(data.table)
+library(xts)
+library(quantmod)
+library(fmlr)
+library(tseries)
+library(data.table)
+library(reticulate)
+library(here)
+library(future.apply)
+source(here("R", "import_data.R"))
+source(here("R", "features.R"))
+source(here("R", "outliers.R"))
+source(here("R", "parallel_functions.R"))
+source(here("R", "execution.R"))
+# performance
+plan(multiprocess)  # for multithreading  workers = availableCores() - 8)
+```
+
+
+### PARAMETRI
+
+
+```{r}
+# import data
+contract = 'AMZN5'
+upsample = FALSE
+```
+
+
+### UČITAVANJE PODATAKA
+
+
+Svaku strategiju sam testirao sa razli;itom frekventnosti podatraka. Najčešće sam koristio minutne, 5-minutne, sate i dnevne podatke. Poneka 10-minutne ili polusatne frekvencije. 
+
+```{r}
+# HFD
+market_data <- import_mysql(
+  contract = contract,
+  save_path = 'D:/market_data/usa/ohlcv',
+  trading_days = TRUE,
+  upsample = upsample,
+  RMySQL::MySQL(),
+  dbname = 'odvjet12_market_data_usa',
+  username = 'odvjet12_mislav',
+  password = 'Theanswer0207',
+  host = '91.234.46.219'
+)
+vix <- import_mysql(
+  contract = 'VIX5',
+  save_path = 'D:/market_data/usa/ohlcv',
+  trading_days = TRUE,
+  upsample = upsample,
+  RMySQL::MySQL(),
+  dbname = 'odvjet12_market_data_usa',
+  username = 'odvjet12_mislav',
+  password = 'Theanswer0207',
+  host = '91.234.46.219'
+)
+```
+
+
+### PREPROCESSING
+
+
+Predprocesne radnje za sve strategije su vrlo jednostavne. Eliminiram ourliere, prpojim VIX podatke, dodam input varijable (npr, povrate, volatilnost, kurtoyis i drugo), dodam pomaknute vrijednosti i eliminiram redove s NA vrijendosti.
+
+```{r}
+# Remove outliers
+market_data <- remove_outlier_median(market_data, median_scaler = 25)
+
+# merge market data and VIX
+market_data <- merge(market_data, vix[, 'close'], join = 'left')
+colnames(market_data)[ncol(market_data)] <- 'vix'
+market_data <- na.omit(market_data)
+
+# Add features
+market_data <- add_features(market_data)
+
+# lags
+market_data$returns_lag <- data.table::shift(market_data$returns)
+market_data$vix_lag <- data.table::shift(market_data$vix)
+
+# Remove NA values
+market_data <- na.omit(market_data)
+```
+
+
+Ideja za ovaj korak u budućnosti je korištenje wavelet transformacija.
+
+
+### BACKCusum strategija
+
+
+IDeja je koristiti statističke testove strukturnih lomova kako bi se identificirao lom u seriji. Zatim se poyizicije zauzimaju u trenutku pojave loma. Na primjer, ako test pokaže da je probijena gornja granica za seriju volatilnosti možemo izaći iz pozicije. Ili ako se pokaže da je kvadrat prinosa probiju gornju granicu, izlazimo iz pozicije. Ideja je da se strukturni lom na povrat ne može dugoročno održati.
+
+
+```{r}
+# backcusum roll
+back_cusum_test <- function(data, col_name, window_size = 100, side = c('greter', 'less')) {
+  bc <- slider_parallel(
+    .x = as.data.table(data),
+    .f =   ~ {
+      formula_ <- paste0('.$', col_name, ' ~ 1')
+      backCUSUM::SBQ.test(stats::as.formula(formula_), alternative = side)[['statistic']]
+    },
+    .before = window_size - 1,
+    .after = 0L,
+    .complete = TRUE,
+    n_cores = -1
+  )
+  bc <- unlist(bc)
+  bc <- c(rep(NA, window_size - 1), bc)
+  return(bc)
+}
+market_data$bc_standardized_returns_less <- back_cusum_test(market_data, 'standardized_returns', 80, side = 'less')
+market_data$bc_standardized_returns_greater <- back_cusum_test(market_data, 'standardized_returns', 80, side = 'greater')
+# market_data$bc_std_80 <- back_cusum_test(market_data, 'std_80', 100, side = 'greater')
+market_data <- na.omit(market_data)
+
+# Log statistics
+quantile(market_data$bc_standardized_returns_less, seq(0, 1, 0.05), na.rm = TRUE)
+quantile(market_data$bc_standardized_returns_greater, seq(0, 1, 0.05), na.rm = TRUE)
+quantile(market_data$bc_std, seq(0, 1, 0.05))
+
+```
+
+
+Za procjenu strukturnog loma sam koristio metodu iz novog rada (2020), BackCUSUM test. Koraci strategije us dakle jednostavni:
+
+1. Za odrešenu duljinu prozora (npr. 100, dakle za prethodnih sto minuta), napravi se statistički BackCUSUM test.
+2. Utvrdimo vrijeme u kojem je statistika prešla određenu kritičnu vrijednost, pri čemu granicu određujemo sami.
+3. Smjer za sljedći *bar* ovisi o koriptenoj varijabli. Na primjer, ako koristimo (standardizirane) povrate, lom na gornu granicu podrazumijeva izlazak iz pozicije.
+
+
+```{r}
+# Backtest
+Rcpp::cppFunction('NumericVector create_signs_test(NumericVector x, float cv) {
+    int n = x.size();
+    NumericVector sign(n);
+
+    for(int i = 1; i < n; ++i) {
+      if (i == 1) sign[i] = R_NaN;
+      else if(x[i - 1] > cv) sign[i] = 0;
+      else sign[i] = 1;
+    }
+    return sign;
+}')
+
+backtest <- function(df, greater, cv) {
+  df$side <- create_signs_test(greater, cv)
+  df$returns_strategy <- df$returns * df$side
+  results_xts <- df[, c('returns', 'returns_strategy')]
+  results_xts <- na.omit(results_xts)
+  p <- charts.PerformanceSummary(results_xts, plot.engine = 'ggplot2')
+  return(list(returns = results_xts, plot = p))
+}
+
+# test
+backcusum_mean <- TTR::SMA(market_data$bc_standardized_returns_greater, 7200)
+quantile(backcusum_mean, seq(0, 1, 0.05), na.rm = TRUE)
+result_plot <- backtest(market_data, backcusum_mean, 1)
+result_plot$plot
+```
+
+
+Provjeravao sam osjetljivost strategije na različite parametre, ali neij se pokazala uspješnom.
+
+
+### DYNAMIC PROGRAMING SEGMENTS (DPSEG) STRATEGIJA
+
+
+Ideja strtegije je praćenje trenda. `dpseg` paket u R-u omogućuje segmentiranje serije na jednake 'ravne' dijelove. Kratak opis paketa je [ovdje](https://cran.r-project.org/web/packages/dpseg/vignettes/dpseg.html). Strategija se opet sastoji od 3 koraka:
+
+1. Za odrešenu duljinu prozora (npr. 100, dakle za prethodnih sto minuta), napravi se linearna segmentacija serije.   
+2. Sprema se zadnja vrijendost koeficijenta za svaki prozor.
+3. Smjer za sljedći *bar* ovisi o vrijdnosti koeficijenta. ako je koeficijent jako pozitivan izlazimo iz pozicije jer očekujemo promjenu trenda.
+
+
+```{r}
+dpseg_roll <- function(data, window_size = 100) {
+  DT <- as.data.table(market_data)[, .(time = index, price = close)][, time := as.numeric(time)]
+  dpseg_last <- slider_parallel(
+    .x = DT,
+    .f =   ~ {
+      library(dpseg)
+      segs <- dpseg(.x$time, .x$price, jumps=FALSE, store.matrix=TRUE, verb=FALSE, P = 0.1)
+      slope_last <- segs$segments$slope[length(segs$segments$slope)]
+      slope_last
+    },
+    .before = window_size - 1,
+    .after = 0L,
+    .complete = TRUE,
+    n_cores = -1
+  )
+  dpseg_last <- unlist(dpseg_last)
+  dpseg_last <- c(rep(NA, window_size - 1), dpseg_last)
+  return(dpseg_last)
+}
+results_dpseg <- dpseg_roll(market_data, 400)
+quantile(results_dpseg, seq(0, 1, .05), na.rm = TRUE)
+```
+
+
+```{r}
+results_2 <- cbind(market_data, slope = results_dpseg)
+results_2$sign <- ifelse(results_2$slope > 0.000005, 0L, 1)
+results_2$sign <- shift(results_2$sign, 1L, type = 'lag')
+results_2$returns_strategy <- results_2$returns * results_2$sign
+PerformanceAnalytics::charts.PerformanceSummary(results_2[, c('returns', "returns_strategy")], plot.engine = 'ggplot2')
+```
+
+Provjeravao sam osjetljivost strategije na različite parametre, ali neij se pokazala uspješnom.
+
+
+### STRATEGIJA VARIJACIJE KOEFICIJENATA
+
+Keficijenti nisu statični kroz vrijeme nego se mijenjaju. Na primjer, korelacija prethodnog i sadašnjeg bara može biti 0.7 u prosjeku, ali u pojedinim periodima može biti 0.3 ili 1.1. Ideja strategije je pratiti vrijendost koeficijenta na određenoj duljini prozora i utvrditi smjer trgoanja kada koeficijent naraste ili padne iznad neke kritične vrijednosti.
+
+
+```{r}
+roll_model <- function(data, window_size = 100) {
+  coefficient <- slider_parallel(
+    .x = as.data.table(data),
+    .f =   ~ {
+      x <- arima(.x$vix, order = c(2L, 0L, 1L), method="CSS")
+      # $coefficients[2]
+      x$coef[1]
+    },
+    .before = window_size - 1,
+    .after = 0L,
+    .complete = TRUE,
+    n_cores = -1
+  )
+  coefficient <- unlist(coefficient)
+  coefficient <- c(rep(NA, window_size-1), coefficient)
+}
+results_varcoeff <- roll_model(market_data, 254)
+```
+
+
+```{r}
+# df table
+df <- cbind(market_data, coefs = results_varcoeff)
+df$coefs_mean <- roll_mean(df$coefs, 256)
+#plot(df$coefs_mean, type = 'l')
+df <- na.omit(df)
+
+# sides!
+side <- vector('integer', nrow(df))
+coefs <- df$coefs_mean
+label <- ifelse(market_data$returns > 0, 1, -1)
+for (i in 1:nrow(df)) {
+ if (i %in% c(1, 2)) {
+   side[i] <- NA
+ } else if (coefs[i-1] > 1) {
+   side[i] <- -1
+ } else {
+   side[i] <- 1
+ }
+}
+side <- ifelse(side == -1, 0, 1)
+sum(side == 0, na.rm = TRUE) / length(side)  # TRADE FREQ
+nrow(df) * (sum(side == 0, na.rm = TRUE) / length(side))  # Number of trades
+df$returns_strategy <- df$returns * side
+perf <- xts::xts(df[, c('returns', 'returns_strategy')])
+PerformanceAnalytics::charts.PerformanceSummary(perf, plot.engine = 'ggplot2')
+```
+
+
+### DRUGE STRATEGIJE
+
+
+Dodatne strategije:
+- Exuber u R-u
+- Jednostavni momentum - kupi ako je raslo u prethodnih n raydoblja.
+- Jednostavna VIX strategija - kupi ako je VIX iznad određene vrijednosti.
+
+
+### IDEJE
+
+Razvoj strategija za manje institucionalne ulagače ili sofisticirane investitore.
+
+Razvoj stetagija koje se temelj na faktor investiranju
+
+Uključiti opcije. Na primjer kupiti put opciju ako vrijednost VIX-a naraste.
+
+Koristiti tekstualne podatkeČ preplata na određeni datafeed.

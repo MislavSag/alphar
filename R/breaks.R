@@ -32,7 +32,7 @@ source('R/import_data.R')
 # performance
 plan(multiprocess)  # for multithreading  workers = availableCores() - 8)
 # market data
-symbols <- c('SPY')  # , 'AMZN', 'UAL', 'T'
+contract <- 'SPY5'
 freq <- c('1 day')
 period <- c(15)
 data_length <- '15 Y'
@@ -51,53 +51,70 @@ dpseg_type <- 'var'
 
 # IMPORT DATA -------------------------------------------------------------
 
-if (grepl('min', freq)) {
-  # Import data
-  market_data <- import_mysql(
-    contract = 'SPY_IB',
-    save_path = 'D:/market_data/usa/ohlcv',
-    RMySQL::MySQL(),
-    dbname = 'odvjet12_market_data_usa',
-    username = 'odvjet12_mislav',
-    password = 'Theanswer0207',
-    host = '91.234.46.219'
-  )
 
-  # Convert to xta
-  market_data <- list(xts::xts(market_data[, 2:(ncol(market_data)-1)], order.by = market_data$date))
-} else {
-  # create tw connection and import data for every symbol
-  tws <- twsConnect(clientId = 5, host = '127.0.0.1', port = 7496)
-  contracts <- lapply(symbols, twsEquity, exch = 'SMART', primary = 'ISLAND')
-  market_data <- lapply(contracts, function(x) {
-    lapply(freq, function(y) {
-      ohlcv <- reqHistoricalData(tws, x, barSize = y, duration = data_length)
-    })
-  })
-  market_data <- purrr::flatten(market_data)  # unlist second level
-  names(market_data) <- unlist(lapply(symbols, function(x) paste(x, gsub(' ', '_', freq), sep = '_')))
-  twsDisconnect(tws)
+# HFD
+market_data <- import_mysql(
+  contract = contract,
+  save_path = 'D:/market_data/usa/ohlcv',
+  trading_days = TRUE,
+  upsample = upsample,
+  RMySQL::MySQL(),
+  dbname = 'odvjet12_market_data_usa',
+  username = 'odvjet12_mislav',
+  password = 'Theanswer0207',
+  host = '91.234.46.219'
+)
+vix <- import_mysql(
+  contract = 'VIX5',
+  save_path = 'D:/market_data/usa/ohlcv',
+  trading_days = TRUE,
+  upsample = upsample,
+  RMySQL::MySQL(),
+  dbname = 'odvjet12_market_data_usa',
+  username = 'odvjet12_mislav',
+  password = 'Theanswer0207',
+  host = '91.234.46.219'
+)
 
-  # add frequency
-  # market_data <- lapply(market_data, function(x) {
-  #   xts::to.period(x, period = 'hours', k = period)
-  # })
+# LFD
+market_data <- import_ib(
+  contract = 'SPY',
+  frequencies = '1 day',
+  duration = '15 Y',
+  type = 'equity',
+  trading_days = FALSE
+)
+colnames(market_data) <- c('open', 'high', 'low', 'close', 'volume', 'WAP', 'hasGaps', 'count')
+vix <- import_ib(
+  contract = 'VIX',
+  frequencies = '1 day',
+  duration = '16 Y',
+  type = 'index',
+  trading_days = FALSE
+)
+colnames(vix) <- c('open', 'high', 'low', 'close', 'volume', 'WAP', 'hasGaps', 'count')
 
-}
+
+# PREPROCESSING -----------------------------------------------------------
 
 
+# Remove outliers
+market_data <- remove_outlier_median(market_data, median_scaler = 25)
 
-# CLEAN DATA --------------------------------------------------------------
+# merge market data and VIX
+market_data <- merge(market_data, vix[, 'close'], join = 'left')
+colnames(market_data)[ncol(market_data)] <- 'vix'
+market_data <- na.omit(market_data)
 
-# remove outliers from intraday market data
-market_data <- lapply(market_data, function(x) {
-  remove_outlier_median(quantmod::OHLC(x), median_scaler = 25)
-})
+# Add features
+market_data <- add_features(market_data)
 
-# use log values
-if (use_logs == TRUE) {
-  market_data <- lapply(market_data, log)
-}
+# lags
+market_data$returns_lag <- data.table::shift(market_data$returns)
+market_data$vix_lag <- data.table::shift(market_data$vix)
+
+# Remove NA values
+market_data <- na.omit(market_data)
 
 
 
@@ -253,10 +270,11 @@ dpseg_last <- function(data, ...) {
   if (is.na(p)) {
     p <- estimateP(x=data$time, y=data$price, plot=FALSE)
   }
-  segs <- dpseg(data$time, data$price, jumps=FALSE, store.matrix=TRUE, verb=FALSE, ...)
+  segs <- dpseg(data$time, data$price, jumps=TRUE, store.matrix=TRUE, verb=FALSE, ...)
   slope_last <- segs$segments$slope[length(segs$segments$slope)]
   return(slope_last)
 }
+
 
 # Daily roll
 dpseg_roll <- function(data, rolling_window = 600, ...) {
@@ -268,7 +286,9 @@ dpseg_roll <- function(data, rolling_window = 600, ...) {
      slope := runner(
        x = .SD,
        f = function(x) {
-         dpseg_last(x, ...)
+         segs <- dpseg(x$time, x$price, jumps=TRUE, store.matrix=TRUE, verb=FALSE, P = 0.5)
+         slope_last <- segs$segments$slope[length(segs$segments$slope)]
+         slope_last
          },
        k = rolling_window,
        na_pad = TRUE
@@ -277,29 +297,37 @@ dpseg_roll <- function(data, rolling_window = 600, ...) {
   results <- na.omit(results)
   return(results)
 }
-results_dpseg <- lapply(market_data, function(x) {
-  dpseg_roll(x, dpseg_rolling[1], type = 'var', P = 0.5)
-  })
 
-
-# alpha execution
-alpha_dpseg <- function(x) {
-  x$returns <- (x$price - shift(x$price, 1L)) / shift(x$price, 1L)
-  x$sign <- ifelse(x$slope < 0, 0L, NA)
-  x$sign <- ifelse(x$slope >= 0 & is.na(x$sign), 1L, x$sign)
-  # print('Hold distribution')
-  # print(table(x$sign))
-  x$sign <- shift(x$sign, 1L, type = 'lag')
-  x$returns_strategy <- x$returns * x$sign
-  x <- na.omit(x)
-  x
+dpseg_roll <- function(data, window_size = 100) {
+  DT <- as.data.table(market_data)[, .(time = index, price = close)][, time := as.numeric(time)]
+  dpseg_last <- slider_parallel(
+    .x = DT,
+    .f =   ~ {
+      library(dpseg)
+      segs <- dpseg(.x$time, .x$price, jumps=FALSE, store.matrix=TRUE, verb=FALSE, P = 0.1)
+      slope_last <- segs$segments$slope[length(segs$segments$slope)]
+      slope_last
+    },
+    .before = window_size - 1,
+    .after = 0L,
+    .complete = TRUE,
+    n_cores = -1
+  )
+  dpseg_last <- unlist(dpseg_last)
+  dpseg_last <- c(rep(NA, window_size - 1), dpseg_last)
+  return(dpseg_last)
 }
-alpha_results <- lapply(results_dpseg, alpha_dpseg)
-names(alpha_results) <- unlist(lapply(symbols, function(x) paste(x, gsub(' ', '_', freq), sep = '_')))
-head(alpha_results$SPY_1_hour$slope)
-hist(alpha_results$SPY_1_hour$slope)
-quantile(alpha_results$SPY_1_hour$slope)
+results_dpseg <- dpseg_roll(market_data, 400)
+quantile(results_dpseg, seq(0, 1, .05), na.rm = TRUE)
 
+results <- cbind(market_data, slope = resultsdpseg)
+results <- cut()
+results$sign <- ifelse(results$slope < -0.000005, 0L, 1)
+# results$sign <- ifelse(results$slope < -0.0002, 0L, 1)
+# results$sign <- ifelse(is.na(results$sign), 0L, results$sign)
+results$sign <- shift(results$sign, 1L, type = 'lag')
+results$returns_strategy <- results$returns * results$sign
+PerformanceAnalytics::charts.PerformanceSummary(results[, c('returns', "returns_strategy")], plot.engine = 'ggplot2')
 
 
 
@@ -347,81 +375,3 @@ perf <- xts::xts(results[, c('return', 'returns_strategy')], order.by = time[3:l
 
 PerformanceAnalytics::charts.PerformanceSummary(perf)
 
-
-
-# BACKCUSUM ---------------------------------------------------------------
-
-# backcusum parameters
-backcusum_rolling_window <- 500
-keep_last_cusum <- TRUE
-
-# backcusum roll
-test_data <- lapply(market_data, function(x) {
-  x$returns <- diff(Cl(x))
-  x$returns_lag <- shift(x$returns <- diff(Cl(x)))
-  x <- na.omit(x)
-  # x <- x[1:500000,]
-  x
-  })
-
-bqp <- slider_parallel(
-  .x = as.data.table(test_data[[1]]),
-  .f =   ~ {
-    bq <- backCUSUM::BQ.test(.$returns ~ 1+ .$returns_lag)
-    },
-  .before = backcusum_rolling_window - 1,
-  .after = 0L,
-  .complete = TRUE,
-  n_cores = -1
-  )
-detector <- lapply(bqp, purrr::pluck, 'detector')
-detector <- lapply(detector, tail, 1)
-detector <- unlist(detector)
-
-# bq roll
-# bq <- slide(
-#   test_data[[1]],
-#   ~ {
-#     bq <- BQ.test(.$returns ~ 1)
-#   },
-#   .before = backcusum_rolling_window - 1,
-#   .complete = TRUE
-# )
-# detector <- lapply(bq, purrr::pluck, 'detector')
-# detector <- lapply(detector, tail, 1)
-# detector <- unlist(detector)
-
-# results
-market_data_sample <- test_data[[1]][(nrow(test_data[[1]])-length(detector)+1):nrow(test_data[[1]])]
-results <- cbind.data.frame(
-  market_data_sample,
-  detector = detector)
-mean(results$detector)
-max(results$detector)
-
-# alpha
-critical_value = 0.8
-for (i in seq_along(results$detector)) {
-  if (i == 1) {
-    sign <- NA
-  } else if (results$detector[i-1] < critical_value) {
-    sign <- c(sign, 1)
-  } else {
-    sign <- c(sign, 0)
-  }
-}
-results$sign <- sign
-table(sign)
-
-# backtest
-results$returns_strategy <- results$returns * results$sign
-results_xts <- xts::xts(results[, c('returns', 'returns_strategy')], order.by = zoo::index(market_data_sample))
-PerformanceAnalytics::charts.PerformanceSummary(results_xts)
-
-# BACKTEST ----------------------------------------------------------------
-
-# charts.PerformanceSummary(alpha_results[[3]][, c('returns', 'returns_strategy')],
-#                           main = names(alpha_results)[3])
-#
-# head(alpha_results[[6]])
-# tail(alpha_results[[4]])

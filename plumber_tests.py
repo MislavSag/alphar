@@ -14,22 +14,11 @@ price = np.random.rand(600)
 time = np.arange(datetime(2018,1,1), datetime(2019,8,24), timedelta(days=1)).astype(datetime)
 t = [t_.timestamp() for t_ in time]
 # pd.DataFrame(np.c_[np.array(t), price]).plot()
-# with p
-x = {
-    'time': t,
-    'price': price.tolist(),
-    'type_': 'var'
-}
-x = json.dumps(x)
-res = requests.post("http://" + IP + "/alphar/dpseg", data=x)
-res_json = res.json()
-print(f'DPSEG without p: , {res_json}')
-# without p
 x = {
     'time': t,
     'price': price.tolist(),
     'type_': 'var',
-    'p': 0.5
+    'p': 0.2
 }
 x = json.dumps(x)
 res = requests.post("http://" + IP + "/alphar/dpseg", data=x)
@@ -64,14 +53,48 @@ print(f'Backcusum volatility: , {res_json[0]}')
 # BACKCUSUM
 x = {
     'x': price.tolist(),    'rejection_value_down': 0.5,
-    'rejection_value_ip': 2.0
-
 }
 x = json.dumps(x)
 res = requests.post("http://" + IP + "/alphar/backcusum", data=x)
 res_json = res.json()
 print(f'BackCUSUM , {res_json[0]}')
 
+
+# VaR
+x = {
+    'x': price.tolist(),
+    'prob': 0.99,
+    'type': 'modified'
+}
+x = json.dumps(x)
+res = requests.post("http://" + IP + "/alphar/varrisk", data=x)
+res_json = res.json()
+print(f'Var , {res_json[0]}')
+
+# GAS VaR
+x = {
+    'x': price[:750].tolist(),
+    'dist': 'std',
+    'scaling_type': 'Identity',
+    'h': 1,
+    'p': 0.01
+}
+x = json.dumps(x)
+res = requests.post("http://" + IP + "/alphar/gas", data=x)
+res_json = res.json()
+print(f'Var , {res_json[0]}')
+
+# General pareto distribution fit
+x = {
+    'x': np.diff(np.log(price[:750])).tolist(),
+    'threshold':  -0.001,
+    'method': 'pwm',
+    'p': 0.999
+}
+x = json.dumps(x)
+res = requests.post("http://" + IP + "/alphar/gpd", data=x)
+res_json = res.json()
+print(f'Gpd ES , {res_json[0]}')
 
 # Finish
 print('Finish!')
