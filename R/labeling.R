@@ -1,7 +1,13 @@
 library(BatchGetSymbols)
 library(quantmod)
 library(PerformanceAnalytics)
+library(data.table)
+library(lubridate)
+library(future.apply)
 source('C:/Users/Mislav/Documents/GitHub/alphar/R/import_data.R')
+
+# performance
+plan(multiprocess(workers = availableCores() - 8))  # multiprocess(workers = availableCores() - 8)
 
 
 # intraday market data
@@ -18,79 +24,53 @@ market_data <- import_mysql(
   host = '91.234.46.219',
 )[[1]]
 head(market_data)
-plot(Cl(market_data))
+#plot(Cl(market_data))
 market_data$returns <- Return.calculate(Cl(market_data))
 market_data_sample <- market_data['2005/2007']
 cl <-  as.vector(zoo::coredata(Cl(market_data_sample)))
 returns <- as.vector(zoo::coredata(market_data_sample$returns))
-
-
 close <- Cl(market_data_sample)
-lookback <- 100
 
-if (is.xts(close) | is.data.frame(close)) {
-  DT <- as.data.table(close)
+
+# utils
+f <- function(y, m, alpha) {
+  weights <- (1 - alpha)^((m - 1):0)
+  ewma <- sum(weights * y) / sum(weights)
+  bias <- sum(weights)^2 / (sum(weights)^2 - sum(weights^2))
+  ewmsd <- sqrt(bias * sum(weights * (y - ewma)^2) / sum(weights))
+  ewmsd
 }
-
-t_day_lag <- data.table(index = DT$index - lubridate::days(1))
-DT_index = DT[, .(index) ]
-x <- DT_index[, nearest:=(index)][t_day_lag, on = 'index', roll = Inf, ]
-y <- cbind(DT$index, x)
-y <- y[!is.na(nearest)]
-
-df0 = (zoo::coredata(close[y[, V1]]) / zoo::coredata(close[y[, nearest]])) - 1
-
-ewmsd <- function(x, alpha) {
-  n <- length(x)
-  sapply(
-    1:n,
-    function(i, x, alpha) {
-      y <- x[1:i]
-      m <- length(y)
-      weights <- (1 - alpha)^((m - 1):0)
-      ewma <- sum(weights * y) / sum(weights)
-      bias <- sum(weights)^2 / (sum(weights)^2 - sum(weights^2))
-      ewmsd <- sqrt(bias * sum(weights * (y - ewma)^2) / sum(weights))
-    },
-    x = x,
-    alpha = alpha
-  )
-}
-
-test <- ewmsd(as.vector(df0), alpha)
-
-test <- frollapply(as.vector(df0), n = 100, FUN = function(x) ewmsd(x, alpha)[100])
-head(test)
-tail(test)
-
-span <- 100
-alpha <- 2 / (span + 1)
-weights <- (1 - alpha) ^ (1:10)
-
-
-
-date
-2005-01-04 15:31:00         NaN
-2005-01-04 15:32:00    0.000288
-2005-01-04 15:33:00    0.000204
-2005-01-04 15:34:00    0.000198
-2005-01-04 15:35:00    0.000279
-...
-2007-12-31 21:56:00    0.001308
-2007-12-31 21:57:00    0.001374
-2007-12-31 21:58:00    0.001456
-2007-12-31 21:59:00    0.001535
-2007-12-31 22:00:00    0.001638
 
 # daily volatility
-daily_volatility <- function() {
+daily_volatility <- function(close, span, win) {
 
+  # convert to data.table because I will use DT merge with rolling
+  if (is.xts(close) | is.data.frame(close)) {
+    DT <- as.data.table(close)
+  }
+
+  # 1 day delta
+  t_day_lag <- data.table(index = DT$index - lubridate::days(1))
+
+  # merge t_day_lag with input index to get first and last period of daily vol
+  DT_index = DT[, .(index) ]
+  x <- DT_index[, nearest:=(index)][t_day_lag, on = 'index', roll = Inf, ]
+  x <- cbind(DT$index, x)
+  x <- x[!is.na(nearest)]
+
+  # calculate returns of daily observations
+  y = (zoo::coredata(close[x[, V1]]) / zoo::coredata(close[x[, nearest]])) - 1
+
+  # calculate alpha based on span argument
+  alpha <- 2 / (span + 1)
+
+  # calculate ewm sd
+  y <- frollapply(y, win, function(x) f(x, win, alpha))
+  y <- cbind(x[, 1], y)
+  colnames(y) <- c('index', 'daily_vol')
+  setkey(y, 'index')
+  return(y)
 }
-
-
-df0 = df0.ewm(span=lookback).std()
-
-
 
 
 cusum_filter <- function(price, threshold) {
@@ -124,15 +104,13 @@ cusum_filter <- function(price, threshold) {
     }
   }
   # add one because we removed one observation in the begging when calculating returns
-  return(t_events + 1)
+  t_events + 1
 }
 
-cusum_events <- cusum_filter(cl, 0.003)
-cusum_events <- zoo::index(Cl(market_data_sample)[cusum_events])
+t_events = cusum_events
+close_date = zoo::index(close)
 
 # add vertical bar
-library(lubridate)
-library(data.table)
 add_vertical_barrier <- function(t_events,
                                  close_date,
                                  num_days=1,
@@ -141,77 +119,126 @@ add_vertical_barrier <- function(t_events,
                                  num_seconds=0
 ) {
   timedelta <- days(num_days) + hours(num_hours) + minutes(num_minutes) + seconds(num_seconds)
-  t_events_timdelta <- t_events + timedelta
-  vertical_barrier <- as.data.table(close_date)[
-    as.data.table(t_events_timdelta), on = 'x', roll = 'nearest'
+  t_events_timdelta <- t_events[[1]] + timedelta
+  t_events_timdelta <- as.data.table(close_date)[,nearest := close_date][
+    as.data.table(t_events_timdelta), on = 'x', roll = -Inf
   ]
-  return(unlist(vertical_barrier))
+  vertical_barrier <- t_events_timdelta$nearest
+  # vertical_barrier <- vertical_barrier[vertical_barrier %in% t_events$index]
+  vertical_barrier <- data.table(index = t_events$index, t1 = vertical_barrier, key = 'index')
+  # vertical_barrier[93:119] for test
+  return(vertical_barrier)
 }
 
 
+# TEST --------------------------------------------------------------------
+
+# Compute daily volatility
+daily_vol <- daily_volatility(close, 50, 1000)
+
+# Apply Symmetric CUSUM Filter and get timestamps for events
+cusum_events <- cusum_filter(cl, mean(daily_vol$daily_vol, na.rm =TRUE))
+cusum_events <- zoo::index(Cl(market_data_sample)[cusum_events])
+cusum_events <- data.table(index = cusum_events, key = 'index')
+
+# Compute vertical barrier
+vertical_barriers <- add_vertical_barrier(cusum_events,
+                                          zoo::index(close),
+                                          num_days=1)
 
 
-# cusum events
-t0_events <- cusum_filter(cl, 0.003)
-t0_events <- zoo::index(Cl(market_data_sample)[t0_events])
-t1_events <- add_vertical_barrier(cusum_events, zoo::index(Cl(market_data)))
-length(t0_events)
-length(t1_events)
-
-# calculate triple barrier events
-triple_barrier_events <- data.frame(
-  t0 = t0_events,
-  t1 = t1_events,
-  trgt = 0.003,
-  side = 1
-)
-
-# meta labels
-meta_labels <- fmlr::label_meta(
-  x = cl,
-  events = triple_barrier_events,
-  ptSl = c(2, 2),
-  n_ex = 10
-)
-head(meta_labels)
+# events <- vertical_barriers[daily_vol[cusum_events]]
+# colnames(events) <- c('t0', 't1', 'trgt')
 
 
-
-close = Cl(market_data_sample)
+close = as.data.table(Cl(market_data_sample))
 t_events = cusum_events
 pt_sl = c(1, 2)
-target = 0.003
+target = daily_vol
 min_return = 0.0002
 num_threads = 1
-vertical_barrier_times = FALSE
+vertical_barrier_times = vertical_barriers
 side_prediction = NA
 verbose = TRUE
 
 
 # 1) Get target
-target = target[t_events]
-target = target[target > min_ret]  # min_ret
-
-
-# 1) Get target
-target = target.reindex(t_events)
-target = target[target > min_ret]  # min_ret
+target = target[index %in% t_events$index]
+target = target[daily_vol > min_return]  # min_ret
 
 # 2) Get vertical barrier (max holding period)
-if vertical_barrier_times is False:
-  vertical_barrier_times = pd.Series(pd.NaT, index=t_events, dtype=t_events.dtype)
+if (isFALSE(vertical_barrier_times)) {
+  vertical_barrier_times <- xts::xts(rep(NA, length(t_events)), order.by = t_events)
+}
 
 # 3) Form events object, apply stop loss on vertical barrier
-if side_prediction is None:
-  side_ = pd.Series(1.0, index=target.index)
-pt_sl_ = [pt_sl[0], pt_sl[1]]
-else:
-  side_ = side_prediction.reindex(target.index)  # Subset side_prediction on target index.
-pt_sl_ = pt_sl[:2]
+if (is.na(side_prediction)) {
+  side_ <- data.table(index = target$index, side = rep(1, nrow(target)))
+} else {
+  side_ <- side_prediction
+}
 
 # Create a new df with [v_barrier, target, side] and drop rows that are NA in target
-events = pd.concat({'t1': vertical_barrier_times, 'trgt': target, 'side': side_}, axis=1)
-events = events.dropna(subset=['trgt'])
+events <- target[vertical_barrier_times, on = 'index'][side_, on = 'index']
+events <- events[, .(index, t1, daily_vol, side)]
+colnames(events) <- c('t0', 't1', 'trgt', 'side')
+events <- events[!is.na(trgt)]
+events <- na.omit(events)
+
+events_ <- events
+out <- copy(events[, .(t1)])
+
+profit_taking_multiple = pt_sl[1]
+stop_loss_multiple = pt_sl[2]
+
+if (profit_taking_multiple > 0) {
+  profit_taking <- data.table(index = events$t0, profit_taking_multiple * events$trgt)
+} else {
+  profit_taking <- data.table(index = events$t0, NA)
+}
+if (stop_loss_multiple > 0) {
+  stop_loss <- data.table(index = events$t0, -stop_loss_multiple * events$trgt)
+} else {
+  stop_loss <- data.table(index = events$t0, NA)
+}
+
+# future.apply::future_vapply()
+
+t0_close <- future.apply::future_vapply(events_$t0, function(x) which(close$index == x), FUN.VALUE = integer(1))
+t1_close <- future.apply::future_vapply(events_$t1, function(x) which(close$index == x), FUN.VALUE = integer(1))
+side_ <- events_$side
+close_ <- close$close
+pt_ <- profit_taking$V2
+sl_ <- stop_loss$V2
+pt <- c()
+sl <- c()
+for (i in seq_along(t0_close)) {
+#  i <- 1
+  closing_prices <- close_[t0_close[i]:t1_close[i]]
+  cum_returns <- (closing_prices / closing_prices[1] - 1) * side_[i]
+  sl <- c(sl, cum_returns[min(which(cum_returns < sl_[i]))]) # Earliest stop loss date
+  pt <- c(pt, cum_returns[min(which(cum_returns > pt_[i]))]) # Earliest profit taking date
+}
+out.at[loc, 'sl'] = cum_returns[cum_returns < stop_loss[loc]].index.min()  # Earliest stop loss date
+out.at[loc, 'pt'] = cum_returns[cum_returns > profit_taking[loc]].index.min()  # Earliest profit taking date
+
+
+
+
+
+
+out['pt'] = pd.Series(dtype=events.index.dtype)
+out['sl'] = pd.Series(dtype=events.index.dtype)
+
+# Get events
+for loc, vertical_barrier in events_['t1'].fillna(close.index[-1]).iteritems():
+  closing_prices = close[loc: vertical_barrier]  # Path prices for a given trade
+  cum_returns = (closing_prices / close[loc] - 1) * events_.at[loc, 'side']  # Path returns
+  out.at[loc, 'sl'] = cum_returns[cum_returns < stop_loss[loc]].index.min()  # Earliest stop loss date
+  out.at[loc, 'pt'] = cum_returns[cum_returns > profit_taking[loc]].index.min()  # Earliest profit taking date
+
+return out
+
 
 # Apply Triple Barrier
 first_touch_dates = mp_pandas_obj(func=apply_pt_sl_on_t1,
@@ -231,25 +258,4 @@ if side_prediction is None:
 # Add profit taking and stop loss multiples for vertical barrier calculations
 events['pt'] = pt_sl[0]
 events['sl'] = pt_sl[1]
-
-
-library(httr)
-
-'/time-series/advanced_dividends/AAPL'
-
-httr::GET()
-
-
-
-
-
-library(devtools)
-install_github("arbuzovv/rusquant")
-
-
-
-library(rusquant)
-getSymbolList('Finam') # download all available symbols in finam.ru
-
-install.packages('devtools')
 

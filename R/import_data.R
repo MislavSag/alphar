@@ -5,13 +5,8 @@ library(IBrokers)
 library(checkmate)
 
 
-# IMPORT DATA FROM MYSQL --------------------------------------------------
 
-symbols = c('SPY')
-trading_hours = TRUE
-upsample = 5
-use_cache = TRUE
-save_path = 'D:/market_data/usa/ohlcv'
+# IMPORT DATA FROM MYSQL --------------------------------------------------
 
 import_mysql <- function(symbols,
                          trading_hours = TRUE,
@@ -26,7 +21,6 @@ import_mysql <- function(symbols,
   assert_logical(trading_hours)
   assert_logical(use_cache)
   assert_int(upsample, lower = 1, upper = 60)
-  assert_character(dbname)
 
   # read from saved file if exist
   data_symbols <- lapply(symbols, function(x) {
@@ -37,12 +31,7 @@ import_mysql <- function(symbols,
       print(paste0('Read ', x, ' from local file. The data is ', round(old, 2), ' days old.'))
     } else {
       # make connection
-      con <- DBI::dbConnect(drv = RMySQL::MySQL(),
-                            dbname = dbname,
-                            username = 'odvjet12_mislav',
-                            password = 'Theanswer0207',
-                            host = '91.234.46.219',
-      )
+      con <- DBI::dbConnect(...)
 
       # query table
       market_data <- DBI::dbGetQuery(con, paste0('SELECT * FROM ', x, ';'))
