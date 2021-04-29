@@ -1,0 +1,67 @@
+---
+title: "Lean report"
+author: "Mislav Sagovac"
+date: "`r format(Sys.time(), '%d-%m-%Y')`"
+output:
+  prettydoc::html_pretty:
+    theme: tactile
+    highlight: github
+params:
+  lean_path: 'C:/Users/Mislav/Documents/GitHub/Lean/Results'
+  algortihm_name: ExuberAlgorithm
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, echo=FALSE, message=FALSE)
+
+library(tidyr)
+library(jsonlite)
+library(kableExtra)
+library(purrr)
+library(data.table)
+library(ggplot2)
+library(PerformanceAnalytics)
+```
+
+
+```{r include=FALSE}
+# read json file with results
+results_json_path <- file.path(params$lean_path, paste0(params$algortihm_name, '.json'))
+result <- read_json(results_json_path)
+names(result)
+```
+
+
+```{r}
+# statistics
+algo_stats <- as.data.frame(list(result$Statistics)) %>% 
+  pivot_longer(., cols = everything())
+  
+rows <- seq_len(nrow(algo_stats) %/% 2)
+kable(list(algo_stats[rows,1:2],
+           algo_stats[-rows, 1:2]),
+      col.names = NULL) %>% 
+  kable_styling(full_width = FALSE) %>% 
+  kable_material(c("striped", "hover"))
+```
+
+```{r, out.width='100%'}
+# Equity curve plot
+benchmark <- rbindlist(result$Charts$Benchmark$Series$Benchmark$Values)
+benchmark <- benchmark[y > 0]
+benchmark[, Date := as.POSIXct(x, origin="1970-01-01")]
+benchmark[, prices := y]
+benchmark[, Benchmrk := (prices / shift(prices)) - 1]
+benchmark[, `:=`(x = NULL, y = NULL, prices = NULL)]
+
+strategy <- rbindlist(result$Charts$`Strategy Equity`$Series$`Daily Performance`$Values)
+strategy[, Date := as.POSIXct(x, origin="1970-01-01")]
+strategy[, Strategy := y / 100]
+strategy[, `:=`(x = NULL, y = NULL)]
+
+equity_curve <- strategy[benchmark, on = 'Date']
+equity_curve <- na.omit(equity_curve)
+
+charts.PerformanceSummary(equity_curve, plot.engine = 'plotly')
+
+```

@@ -1,0 +1,61 @@
+---
+title: "Lean report multiple"
+author: "Mislav Sagovac"
+date: "`r format(Sys.time(), '%d-%m-%Y')`"
+output:
+  prettydoc::html_pretty:
+    theme: tactile
+    highlight: github
+params:
+  lean_path: 'C:/Users/Mislav/Documents/GitHub/alphar/backtests/MinMax_SMA_48_004'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, echo=FALSE, message=FALSE)
+
+library(tidyr)
+library(jsonlite)
+library(kableExtra)
+library(purrr)
+library(data.table)
+library(ggplot2)
+library(PerformanceAnalytics)
+```
+
+```{r}
+json_files <- list.files("C:/Users/Mislav/Downloads", pattern = ".json", full.names = TRUE)
+file.copy(json_files, params$lean_path[[1]])
+```
+
+```{r include=FALSE}
+# read json file with results
+results_json_path <- list.files(params$lean_path[[1]], pattern = ".json", full.names = TRUE)
+results <- lapply(results_json_path, read_json)
+names(results[[1]])
+```
+
+```{r, out.width='100%'}
+# Equity curve plot
+benchmark <- rbindlist(lapply(results, function(x) rbindlist(x$Charts$Benchmark$Series$Benchmark$Values)))
+benchmark <- unique(benchmark)
+benchmark[, Date := as.POSIXct(x, origin="1970-01-01")]
+benchmark <- benchmark[order(Date)]
+benchmark[, prices := y]
+benchmark[, Benchmrk := (prices / shift(prices)) - 1]
+benchmark <- benchmark[y > 0]
+benchmark[, `:=`(x = NULL, y = NULL, prices = NULL)]
+
+# Equity curve for strategy
+strategy <- rbindlist(lapply(results, function(x) rbindlist(x$Charts$`Strategy Equity`$Series$`Daily Performance`$Values)))
+strategy <- unique(strategy)
+strategy[, Date := as.POSIXct(x, origin="1970-01-01")]
+strategy <- strategy[order(Date)]
+strategy[, Strategy := y / 100]
+strategy[, `:=`(x = NULL, y = NULL)]
+
+equity_curve <- strategy[benchmark, on = 'Date']
+equity_curve <- na.omit(equity_curve)
+
+charts.PerformanceSummary(equity_curve, plot.engine = 'plotly')
+
+```

@@ -1,0 +1,62 @@
+---
+title: "Lean report optimization"
+author: "Contentio d.o.o."
+date: "4/23/2021"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, echo=FALSE, message=FALSE)
+
+library(tidyr)
+library(jsonlite)
+library(kableExtra)
+library(purrr)
+library(data.table)
+library(ggplot2)
+library(PerformanceAnalytics)
+```
+
+```{r}
+opt_path <- "C:/Users/Mislav/Documents/GitHub/lean_test/ExuberLocal/optimizations/2021-04-23_09-47-55"
+opt_files <- list.files(opt_path, full.names = TRUE)
+results_json_path <- lapply(opt_files, function(x) list.files(x, pattern = "json", full.names = TRUE))
+opt_results <- lapply(results_json_path[1:150], function(x) read_json(x[2]))
+
+```
+
+```{r}
+cum_returns <- lapply(opt_results, function(x) x$Statistics$`Net Profit`)
+cum_returns <- lapply(cum_returns, function(x) if (is.null(x)) {return(NA)} else {x})
+cum_returns <- unlist(cum_returns)
+cum_returns <- gsub("%", "", cum_returns)
+cum_returns <- as.numeric(cum_returns)
+cum_returns <- data.table(cum_returns, opt_files[1:150])
+cum_returns <- cum_returns[order(cum_returns, decreasing = TRUE)]
+head(cum_returns, 10)
+# cum_returns[[1]]$
+
+```
+
+
+```{r, out.width='100%'}
+# Equity curve plot
+benchmark <- rbindlist(lapply(results, function(x) rbindlist(x$Charts$Benchmark$Series$Benchmark$Values)))
+benchmark <- benchmark[y > 0]
+benchmark[, Date := as.POSIXct(x, origin="1970-01-01")]
+benchmark[, prices := y]
+benchmark[, Benchmrk := (prices / shift(prices)) - 1]
+benchmark[, `:=`(x = NULL, y = NULL, prices = NULL)]
+
+strategy <- rbindlist(lapply(results, function(x) rbindlist(x$Charts$`Strategy Equity`$Series$`Daily Performance`$Values)))
+strategy[, Date := as.POSIXct(x, origin="1970-01-01")]
+strategy[, Strategy := y / 100]
+strategy[, `:=`(x = NULL, y = NULL)]
+
+equity_curve <- strategy[benchmark, on = 'Date']
+equity_curve <- na.omit(equity_curve)
+
+charts.PerformanceSummary(equity_curve, plot.engine = 'plotly')
+
+```

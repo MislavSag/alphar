@@ -1,0 +1,403 @@
+---
+title: "Prezentacija strategija"
+author: "Mislav Sagovac"
+date: "`r format(Sys.time(), '%d-%m-%Y')`"
+output:
+  prettydoc::html_pretty:
+    theme: tactile
+    highlight: github
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, echo=FALSE, message=FALSE)
+
+# fundamental
+library(data.table)
+library(purrr)
+library(rvest)
+# wrangling help packages
+library(runner)
+library(roll)
+library(ggplot2)
+library(tidyr)
+library(PerformanceAnalytics)
+library(TTR)
+library(mlr3verse)
+library(fst)
+# performance
+library(parallel)
+library(foreach)
+library(future.apply)
+# vilatility modeling
+library(rugarch)
+source('C:/Users/Mislav/Documents/GitHub/alphar/R/import_data.R')
+
+
+```
+
+### MinMax strategije
+
+Strategija je pokazala dobre rezultate kod prvog backtesta pa su testirane različite varijacije strategije. Prvo sam napravio istraživački dio u R-u, a potom sam isprogramirao backtest iste strategije u QC-u. U nastavku prvo prikazujem istraživački dio u R-u
+
+za početak učitavamo podatke za sva sastavnice SP500 indeksa. Podaci o sastavnicama su preuzeti sa wikipedie. Tržišni podaci za neke dionice nedostaju.
+
+```{r}
+# get sp500 companies
+url <- 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+sp500 <- read_html(url) %>%
+  html_nodes('table') %>%
+  .[[1]] %>%
+  html_table(.)
+sp500_changes <- read_html(url) %>%
+  html_nodes('table') %>%
+  .[[2]] %>%
+  html_table(., fill = TRUE)
+head(sp500_changes)
+sp500_symbols <- c(sp500$Symbol, sp500_changes$Added[-1], sp500_changes$Removed[-1])
+sp500_symbols <- unique(sp500_symbols)
+
+# import data
+sp500_stocks <- import_blob(
+  symbols = sp500_symbols,  # 'IWM'
+  upsample = 1,
+  trading_hours = TRUE,
+  use_cache = TRUE,
+  combine_data = FALSE,
+  save_path = 'D:/market_data/equity/usa/hour/trades',
+  container = "equity-usa-hour-trades"
+)
+spy <- import_blob(
+  symbols = 'SPY',
+  upsample = 1,
+  trading_hours = TRUE,
+  use_cache = TRUE,
+  combine_data = FALSE,
+  save_path = 'D:/market_data/equity/usa/hour/trades',
+  container = "equity-usa-hour-trades"
+)[[1]]
+sp500_stocks <- compact(sp500_stocks)
+sp500_stocks <- lapply(sp500_stocks, as.data.table)
+sp500_stocks <- rbindlist(sp500_stocks, idcol = TRUE, fill = TRUE)
+
+# calculate returns
+spy <- na.omit(as.data.table(spy)[, returns := (close / shift(close)) - 1][])
+sp500_stocks[, returns := (close / shift(close)) - 1, by = .(`.id`)]
+```
+
+Za sve dionice sastavnice SP500 indeksa izračunava se 0.999 i 0.001 percentil prinosa u poskljednje 2 godine. Nakon toga se izvode dvije varijable: *above* koja je jednaka razlici prinosa i gornjeg percentila *ako* je prinos veći od percentila. Slično, *below* je razlika prinosa i donjeg percentila, *ako* je prinos u tekućem razdoblju manji od donjeg percentila. Kod prikazuje izračun.
+
+
+```{r}
+# calculate sum of extra negative and positive returns
+sp500_stocks[, p_999 := roll_quantile(returns, 255*8, p = 0.999), by = .(`.id`)]
+sp500_stocks[, p_001 := roll_quantile(returns, 255*32, p = 0.001), by = .(`.id`)]
+sp500_stocks[, above := ifelse(returns > p_999, returns - p_999, 0), by = .(`.id`)]
+sp500_stocks[, below := ifelse(returns < p_001, abs(returns - p_001), 0), by = .(`.id`)]
+sp500_stocks[, above_dummy := ifelse(returns > p_999, 1, 0), by = .(`.id`)]
+sp500_stocks[, below_dummy := ifelse(returns < p_001, 1, 0), by = .(`.id`)]
+```
+
+Kako bi dobili agregatni pokazatelj rizika, sve vrijendosti varijabli *above* i *below* se zbrajaju. Tako se dobivaju agregatne vrijednosti varijabli *below* i *above*. Intuitivno, što je *above* varijabla veća, vveći je broj i ukupni iznos esktremnih prinosa u tekućem razdoblju i obrnuto za *below*. Budući da u jednom razdoblju može biti mnogo ekstremnih pozitivnih i negativnih prinosa istovremeno, izračunata je nova varijable, *excess*, koja je jednaka razlici *above* i *below*. Varijable *excess* pokazuje nagle skokove, pa sam izračunao pomične presjeke kako bi se izgladila vrijednost kroz vrijeme. Ovo je slično pomičnim prosjecima koji se koriste za cijene (SMA, EMA itd.).
+
+```{r}
+# get tail risk mesures
+sp500_indicators <- sp500_stocks[, .(below = sum(below, na.rm = TRUE),
+                                     above = sum(above, na.rm = TRUE)), by = .(index)]
+sp500_indicators[, excess := above - below]
+sp500_indicators[, excess_sma := SMA(excess, 8 * 9)]
+sp500_indicators[, excess_sma_short := SMA(excess, 8 * 1)]
+sp500_indicators <- as.data.table(spy)[, .(index, close, returns, volume)][sp500_indicators, on = 'index']
+sp500_indicators <- sp500_indicators[order(index)]
+sp500_indicators <- na.omit(sp500_indicators)
+```
+
+Sada ćemo prikazati nekoliko grafova koji pokazuju kretanje ključnog indikatora (*excess*).
+
+Prva verzija strategije koju sam razvijao temlejila se na jednostavnoj logici: Kada vrijednost varijable *below* jako naraste (iznad neke granie, npr. 0.9), prodajemo dionicu. Ponovno ulayimo u poziciju tek kada se pojavi visoka vrijendost (iznad neke granice) *above* varijable.
+
+Pogledajmo grafove
+
+```{r}
+# analyse results
+vetical_lines_sell <- sp500_indicators[below > 0.9, index]
+vetical_lines_buy <- sp500_indicators[above > 0.9, index]
+ggplot(sp500_indicators, aes(x = index, y = close)) +
+  geom_line() +
+  geom_vline(xintercept = vetical_lines_sell, color = 'red') +
+  geom_vline(xintercept = vetical_lines_buy, color = 'green')
+```
+
+Crvene vertikalne linije su razdoblja u kojima je *below* iznad granice, a zelene vertikalne linije razdoblja u kojima je *above* iznad granice.
+Možemo primjetititi da se linije pojavljuju baš u trenutku turbulencija.
+
+Kako bi jasnije vidjeli što se događa oko kriza možemo približiti za covid krizu:
+
+```{r}
+ggplot(sp500_indicators[index %between% c('2020-01-01', '2020-06-01')], aes(x = index, y = close)) +
+  geom_line() +
+  geom_vline(xintercept = vetical_lines_sell, color = 'red') +
+  geom_vline(xintercept = vetical_lines_buy, color = 'green')
+```
+
+i GFC:
+
+```{r}
+ggplot(sp500_indicators[index %between% c('2007-06-01', '2010-06-01')], aes(x = index, y = close)) +
+  geom_line() +
+  geom_vline(xintercept = vetical_lines_sell, color = 'red') +
+  geom_vline(xintercept = vetical_lines_buy, color = 'green')
+```
+
+Strategija koja se temeljei na pravili 'kupi kada je varijabla above ili below iznad granice' ima nekoliko problema. Prvi je što jako dugo možemo biti izvan tržišta. Drugi je što je moguće čekati mnogo vremena dok se pojavi signal za kupnju, nakon što se pojavio signal za prodaju.
+
+U nastavku pretpostavljam da je bolje korisitit *excess* varijablu koja je stacionarna i uvijek se relativno brzo vraća na očekivanu vrijendost () osim u vremenima kriza.
+
+Pogledajmo kako izgleda *excess* varijabla za cijelo promatrano razdoblje:
+
+```{r}
+ggplot(sp500_indicators, aes(x = index, y = excess_sma)) +
+  geom_line()
+```
+
+```{r}
+ggplot(sp500_indicators, aes(x = index)) +
+  geom_line(aes(y = excess_sma), color = 'blue') +
+  geom_line(aes(y = excess_sma_short), color = 'red')
+```
+
+```{r}
+ggplot(sp500_indicators[index %between% c('2020-01-01', '2020-06-01')], aes(x = index)) +
+  geom_line(aes(y = excess_sma), color = 'blue') +
+  geom_line(aes(y = excess_sma_short), color = 'red')
+```
+
+```{r}
+ggplot(sp500_indicators[index %between% c('2015-08-20', '2015-09-15')], aes(x = index)) +
+  geom_line(aes(y = excess_sma), color = 'blue') +
+  geom_line(aes(y = excess_sma_short), color = 'red')
+```
+
+```{r}
+ggplot(sp500_indicators[index %between% c('2007-06-01', '2010-01-01')], aes(x = index)) +
+  geom_line(aes(y = excess_sma), color = 'blue') +
+  geom_line(aes(y = excess_sma_short), color = 'red')
+```
+
+### BACKTEST MIN MAX STRATEGIJE - PRODAJ (KUPI) NAKON ODREĐENE GRANICE
+
+Iako je nisam koristio kao finanlnu verziju pokazujem rezultate strategije koja prodaje nakon nekog thresholda
+
+
+```{r}
+# trading rule
+side <- rep(NA, nrow(sp500_indicators))
+side[which(sp500_indicators$below > 0.6) + 1] <- 0
+side[which(sp500_indicators$above > 0.5) + 1] <- 1
+side[1] <- 1
+side <- na.locf(side, na.rm = FALSE)
+
+# backtest
+returns_strategy <- side * sp500_indicators$returns
+beckteset_data <- cbind(sp500_indicators[, .(index, returns)], returns_strategy)
+beckteset_data <- na.omit(beckteset_data)
+charts.PerformanceSummary(beckteset_data)
+```
+
+### BACKTEST MINMAX STRATEGIJE - EXCESS PRISTUP
+
+```{r}
+# trading rule
+side <- ifelse(shift(sp500_indicators$excess_sma_short) < -0.005, 0, 1)
+
+# backtest
+returns_strategy <- side * sp500_indicators$returns
+beckteset_data <- cbind(sp500_indicators[, .(index, returns)], returns_strategy)
+beckteset_data <- na.omit(beckteset_data)
+charts.PerformanceSummary(beckteset_data)
+```
+
+### OPTIMIZACIJA MINMAX STRATEGIJE - EXCESS PRISTUP
+
+Iako se optimizacija parametara na backtestingu ne prepručuje jer gotovo isključvio dovodi *overfittinga*, u nastavku provodimo analizu pod pretostavkom da je gornaj analiza protifabilna za slučajni izbor parametara. Želimo provjeriti koliko je backtesting profitabilan za različite iybore parametara. Malo neobično, ali *out of sample* test će biti dotcom bubble, koji ćemo kasnije testirati u QC jer isto razdoblje nije dostupno na IB i FMP bazi.
+
+```{r}
+# params
+sma_width <- 1:60
+threshold <- seq(-0.00001, -0.01, by = -0.00001)
+paramset <- expand.grid(sma_width, threshold)
+colnames(paramset) <- c('sma_width', 'threshold')
+
+# backtset
+optimize_strategy <- function(sma_width, threshold) {
+  excess_sma <- SMA(sp500_indicators$excess, sma_width)
+  side <- ifelse(shift(excess_sma) < threshold, 0, 1)
+  returns_strategy <- side * sp500_indicators$returns
+  beckteset_data <- cbind(sp500_indicators[, .(returns)], returns_strategy)
+  beckteset_data <- na.omit(beckteset_data)
+  cum_return <- PerformanceAnalytics::Return.cumulative(beckteset_data)[, 2]
+}
+plan(multiprocess(workers = 16))
+cum_returns <- future_vapply(1:nrow(paramset),
+                             function(x) optimize_strategy(paramset[x, 1], paramset[x, 2]), numeric(1))
+results <- as.data.table(cbind(paramset, cum_returns))
+```
+
+Pevo možemo pogledati skup parametara koji daju najbolje (najgore) prinose
+
+```{r}
+# n best
+head(results[order(cum_returns, decreasing = TRUE), ], 50)
+tail(results[order(cum_returns, decreasing = TRUE), ], 50)
+```
+
+
+Sve rezultate opzimizacije ćemo prikazati pomoću *heatmap-a*.
+
+```{r}
+ggplot(results, aes(x = sma_width, y = threshold, fill = cum_returns)) +
+  geom_tile()
+```
+
+```{r}
+ggplot(results[sma_width %in% 10:25 & threshold %between% c(-0.001, -0.00001)],
+       aes(x = sma_width, y = threshold, fill = cum_returns)) +
+  geom_tile()
+```
+
+```{r}
+ggplot(results[sma_width %in% 1:10 & threshold %between% c(-0.01, -0.0001)],
+       aes(x = sma_width, y = threshold, fill = cum_returns)) +
+  geom_tile()
+```
+
+Mnogo otkriva dstribucija prinosa za sve kombinacije parametara.
+
+```{r}
+ggplot(results, aes(cum_returns)) +
+  geom_histogram()
+```
+
+```{r}
+# trading rule
+sp500_indicators[, excess_sma := SMA(excess, 12)]
+side <- ifelse(shift(sp500_indicators$excess_sma) < -0.0055, 0, 1)
+
+# backtest
+returns_strategy <- side * sp500_indicators$returns
+beckteset_data <- cbind(sp500_indicators[, .(index, returns)], returns_strategy)
+beckteset_data <- na.omit(beckteset_data)
+charts.PerformanceSummary(beckteset_data)
+```
+
+```{r}
+# restore excess variable
+sp500_indicators[, excess_sma := SMA(excess, 8 * 9)]
+sp500_indicators[, excess_sma_short := SMA(excess, 8 * 1)]
+
+# params
+threshold_short <- seq(-0.001, -0.01, by = -0.001)
+threshold_long <- seq(-0.001, -0.01, by = -0.001)
+paramset <- expand.grid(threshold_short, threshold_long)
+colnames(paramset) <- c('threshold_short', 'threshold_long')
+
+# backtset
+optimize_strategy <- function(threshold_short, threshold_long) {
+  side <- ifelse(shift(sp500_indicators$excess_sma_short) < threshold_short |
+                   shift(sp500_indicators$excess_sma < threshold_long), 0, 1)
+  returns_strategy <- side * sp500_indicators$returns
+  beckteset_data <- cbind(sp500_indicators[, .(returns)], returns_strategy)
+  beckteset_data <- na.omit(beckteset_data)
+  cum_return <- PerformanceAnalytics::Return.cumulative(beckteset_data)[, 2]
+}
+plan(multiprocess(workers = availableCores() - 16))
+cum_returns <- future_vapply(1:nrow(paramset), function(x) optimize_strategy(paramset[x, 1], paramset[x, 2]), numeric(1))
+results <- as.data.table(cbind(paramset, cum_returns))
+
+# n best
+head(results[order(cum_returns, decreasing = TRUE), ], 50)
+```
+
+```{r}
+ggplot(results, aes(x = threshold_short, y = threshold_long, fill = cum_returns)) +
+  geom_tile()
+```
+
+### VAR I ES UMJESTO PRINOSA IZNAD PERCENTILA
+
+U okviru MinMax strategije trenutno radim analizu pomoću teorije ekstremnih vrijenosti.
+
+```{r}
+risk_path <- "C:/Users/Mislav/Documents/GitHub/alphar/risks"
+gpd_risks_left_tail <- readRDS(paste0(risk_path, '/gpd_risks_left_tail.rds'))
+gpd_risks_right_tail <- readRDS(paste0(risk_path, '/gpd_risks.rds'))
+head(gpd_risks_left_tail)
+
+# merge with returns and close
+returns <- sp500_stocks[, .(.id, index, close, returns)]
+setnames(returns, colnames(returns), c('symbol', 'date', 'close', 'return'))
+returns <- returns[returns[, .N, by = .(symbol)][N > 2500], on = "symbol"] # stock have at least 1 year of data
+returns <- na.omit(returns)
+alpha <- cbind(returns, n_exceed = gpd_risks_left_tail$n_exceed_500_10, n_exceed_right = gpd_risks_right_tail$n_exceed_500_10,
+               e_1000_14_9990 = gpd_risks_right_tail$e_1000_14_9999[1])
+alpha <- alpha[, list(sum(e_1000_14_9990, na.rm = TRUE)), by = .(date)]
+alpha <- alpha[spy, on = c('date' = 'index')]
+alpha$V1 <- na.locf(alpha$V1)
+str(gpd_risks_left_tail)
+```
+
+
+```{r}
+ggplot(alpha, aes(x = date)) +
+  geom_line(aes(y = V1 * 1000000), color = 'red') +
+  geom_line(aes(y = close))
+
+```
+
+
+
+### OSTALI POKUŠAJI
+
+Osim prikazanih jendnotavnih pravila trgovanja pokušao sam predvijdjti buduće vrijednosti *excess* varijable pomoću jendostavnog ARIMA modela. Međutim, rezultati se nisu mnogo razlikovali od gornjeg jednostavnog pristupa. Možda bi rezultati bili drugačiji sa nekim 'naprednijim' modelom.
+
+Primjer predikcije
+
+```{r}
+library(forecast)
+
+# train test split
+sp500_indicators[, excess_sma := SMA(excess, 12)]
+sample <- na.omit(sp500_indicators[, .(index, excess_sma)] )
+sample <- sample[min( which ( excess_sma != 0 )) : max( which( excess_sma != 0 ))] # remove leading and ending zeroes
+sample <- as.xts.data.table(sample)
+sample <- tsbox::ts_ts(sample)
+head(sample)
+
+# Multi-step forecasts with re-estimation
+cl <- makeCluster(3L)
+registerDoParallel(cl)
+arima_forecasts <- runner(
+  x = sample,
+  f = function(x) {
+    fit <- forecast::auto.arima(x)
+    forecast(fit, h = 5)$mean
+  },
+  k = 1000,
+  na_pad = FALSE
+)
+stopCluster(cl)
+
+arima_forecasts[1, ]
+
+```
+
+
+
+OSTALE STRATEGIJE KOJE SAM PROBAVAO A NISAM IH PRIKAZAO
+
+1. Izračun mjera rizika (za sada samo jendnostavne volatilnosti i prametre genralne Pareto distribucije) te puštanje kroz ML model.
+2. Exuber razvijena unutar Lan repozitorija.
+3. Razvoj DPSEG i BACKCUSUM strategija poću Lean repozitorija, razvijen lokalno.
+4. Faktor investing sa rangiranjem faktora.
+5. Momenutm trading strategija - klonirano sa QC
+6. Min Max strateiju na kriptovalutama.

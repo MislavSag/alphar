@@ -1,0 +1,56 @@
+---
+title: "Exuber"
+author: "Contentio d.o.o."
+date: "`r format(Sys.time(), '%d-%m-%Y')`"
+output:
+  prettydoc::html_pretty:
+    theme: tactile
+    highlight: github
+---
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(warning=FALSE, echo=FALSE, message=FALSE)
+
+```
+
+# OPIS STRATEGIJE
+
+Strategija koristi poznati statistički test za identificiranje balona (eng. *bubble*) na finanicijskim tržištima prema radovima Phillips et al. (2015) i Pavlidis et al. (2016). Radi se o testovima eksplozivnosti, koji balone identificiraju pomoću rekurzivnog ADF testa (augmented Dickey Fuller test). ADF test je uobičajeni statistički test za testiranje (ne)stacionarnosti vremenske serije.
+
+Jednostavno rečeno, kada dinamika cijene postane eksplozivna (nagli rast; koeficijent uz pomaknutu varijablu veći od 1; eksplozivan rast), identificiran je balon na tržištu. Exuber test (ovako ćemo dalje nazivati test eksplozivnosti spomenutih autora) se temelji na sadf statistici koja poprima određenu vrijednost. Što je veća sadf vrijednost, veća je vjerojatnost pojave balona. Kada sadf vrijednost prijeđe određenu razinu identificiran je bubble na tržištu. "Određena" razina u izvornim radovima utvrđena je na temelju intervala pouzdanosti, odnosno riječ je o kritičnoj granici (kritična vrijednost se skraćeno se naziva gsadf).
+
+Informacija o pojavi balona može se iskoristiti na dva načina:
+
+1. Kupiti imovinu u balonu. Ovo može izgledati čudno, ali u financijama je dugo poznata teorija racionalnih balona. Dakle, baloni su sastavni dio tržišta i mogu biti rezultat racionalnog ponašanja investitora, a pošto imovina snažno raste u balonu, racionalno je kupiti imovinu u vrijeme balona.
+2. Prodati imovinu koja je u balonu. Budući da je imovina (npr. SPY) naglo rastao u kratkom razdoblju i da je vjerojatno u stanju balona, prodajemo imovinu radi sprečavanja dodatnih gubitaka.
+
+Strategija koju ćemo opisati koristi pristup 2, ali dodajemo još jedan kriterij. Osim kriterija po kojem prodajemo imovinu (SPY) kada sadf statistika prijeđe kritičnu vrijednost (npr. vrijednost 1), nužno je da je u tekućem razdoblju ostvaren pad prinosa. 
+
+
+# OPIS ALGORITMA 
+
+Algoritam se sastoji od sljedećih koraka
+
+1. Univerzum - strategija koristi samo cijene SPY-a kao input podatke. Moguće je koristiti fundamentalne podatke poput P/E omjera, FCF indikatora, DCF indikatora i sl.
+2. Na *rolling windowu* izračunavamo vrijednost Exuber indikatora (sadf).
+3. Uspoređujemo sadf vrijednost iz 2. sa kritičnim vrijednostima uz razinu značajnosti 90%, 95% i 99% ili izabiremo proizvoljnu granicu.
+4. Prodajemo dionicu kada vrijednost indikatora prijeđe kritičnu vrijednost.
+
+
+# OPTIMIZACIJA STRATEGIJE POMOĆU QUANTCONNECT OKRUŽENJA
+
+Istraživački dio strategije je rađen u R-u, dok je konačni backtest kao i uvijek proveden unutar Lean/Quantconnect okruženja. Napravljena je optimizacija strategije na temelju tri parametra: duljina prozora za koji se računa sadf vrijednost, broj pomaknutih vrijednosti, vrijednost granice.
+
+Rezultati najbolje strategije prikazani su u nižem pdfu (izvještaj je generiran kroz Lean sustav):
+
+<iframe width="100%" height="1000" name="iframe" src="C:/Users/Mislav/Documents/GitHub/lean_test/exuber_result_best.html"></iframe>
+
+Izvještaj možete preuzeti klikom na link: 
+
+```{r echo=FALSE}
+xfun::embed_file('C:/Users/Mislav/Documents/GitHub/lean_test/exuber_result_best.html')
+```
+
+

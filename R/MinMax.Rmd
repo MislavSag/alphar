@@ -1,0 +1,340 @@
+---
+title: "MiinMax strategija"
+author: "Contentio d.o.o."
+date: "`r format(Sys.time(), '%d-%m-%Y')`"
+output:
+  prettydoc::html_pretty:
+    theme: tactile
+    highlight: github
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(warning=FALSE, echo=FALSE, message=FALSE)
+
+library(data.table)
+library(roll)
+library(ggplot2)
+library(future.apply)
+library(kableExtra)
+library(readxl)
+library(PerformanceAnalytics)
+library(xts)
+library(DT)
+source('C:/Users/Mislav/Documents/GitHub/alphar/R/import_data.R')
+
+```
+
+# OPIS STRATEGIJE
+
+Strategija se temelji na hipotezi pozitivnog odnosa ekstremnih vrijednosti prinosa i sentimenta. Ako dionica SPY-a naraste 0.1% u jednom satu, sentiment je nepromijenjen. Ne očekuju se nagli šokovi u cijeni. Međutim ako SPY padne 2% u jednom satu, očito je da se nešto značajno događa. Ovo je na tragu teorije ekstremnih vrijednosti koja nastoji objasniti dinamiku cijena n repovima distribucije (vrlo velikih padova ili rasta cijena).
+
+Budući da financijska serija SPY-a predstavlja samo jednu realizaciju, umjesto same cijene SPY-a, koristit ćemo cijene dionica sastavnica SPY-a. Dakle oko 500 dionica razdoblju ili oko 700 dionica ukupno (ovisno kako su dionice ulazile u indeks ili izlazile iz indeksa). Jednostavno rečeno, ako cijene dionica, koje su sastavnice indeksa počinju *naglo* padati, prodajemo SPY. U suprotnom držimo SPY.
+
+# OPIS ALGORITMA 
+
+Algoritam se sastoji od sljedećih koraka
+
+1. Univerzum - u prvom koraku izabiremo dionice koje ćemo koristiti u analizi. U našem slučaju to su sastavnice SPY-a. Od podataka se koriste samo zaključne cijene. Koristi se satna frekvencija. Istraživački dio je pokazao da satna frekvencija daje bolje rezultate od dnevne frekvencije, lai a unutar satne frekvencije ne daju bolje rezultate od satne.
+2. Izračun "ekstremnih" prinosa - za svaku dionicu iz univerzuma računamo 0.999 i 0.001 percentil prinosa u posljednje dvije godine. Ovi prinosi predstavljaju "ekstremne" (vrlo visoke i vrlo niske) prinose koje je ostvarila dionica u prošlosti. Primjerice, za AAPL gornji percentil može biti 3%, a donji percentil -3.5%.
+3. Identificiranje visokih prinosa - ovdje provjeravamo je li zadnji dostupni prinos veći ili manji od gornjeg ili donjeg percentila iz koraka 2. Ako nije, ostavljamo vrijednost nula, u suprotnom spremamo vrijednost ostvarenog prinosa i percentila. Na primjer, ako je AAPL u zadnjem satu ostvario prinos od 1%, zapisujemo nulu. Ako je ostvario 4%, spremamo vrijednost 0.01 (4% -3% + 1%), a kako ostvari prinos -4%, spremamo vrijednost -0.005 (-4% + 3.5%). Ovaj postupak ponavljamo za sve dionice u univerzumu.
+4. Sumiramo sve vrijednosti iz točke 3. Na primjer, AAPL 0, TSLA 0.005, MSFT -0.01 itd. Ovu varijablu možemo nazvati *excess*. Vrijednost joj je pozitivna ako je u ostvareno više pozitivnih ekstremnih prinosa i obrnuto.
+5. U petom koraku transformiramo ključni indikator iz koraka 4 (varijablu *excess*), kako bi lakše pratili dinamiku. Točnije, izračunavamo pomični prosjek za prethodnih n dana. U backtestu se najbolji pokazao pomak od cca 10 dana.
+6. Prodajemo SPY ako je SMA *esxcess* manji od neke vrijednosti (cca -0.05). Intuitivno, **prodajemo SPY kada je prosjek izrazito negativnih prinosa u posljednjih 10 dana (SMA *excess*) porastao**.
+
+# ISTRAŽIVANJE
+
+U nastavku prikazujemo rezultate koje smo dobili u istraživačkom dijelu, a kasnije ću prikazati rezultate unutar Quantconnect backtesting okruženja.
+
+Prvi korak je učitavanje podataka. Učitavamo cijene dionice sastavnica SP500 indeksa i računamo prinose. Ostavljamo samo varijable koje su nam potrebne za analizu (*close*, *returns*), a ostale brišemo. Primijenili smo i jednostavnu metodu eliminiranja ekstremnih vrijednosti: pobrisali smo prinose iznad 50% i ispod  -50% (pretpostavili smo da se radi o greškama u podacima koji su po našem iskustvu mogući). Prikaz podataka:
+
+
+```{r}
+# import data
+sp500_symbols <- import_sp500()
+sp500_stocks <- import_intraday("D:/market_data/equity/usa/hour/trades_adjusted", "csv")
+sp500_stocks <- sp500_stocks[symbol %in% c("SPY", sp500_symbols)]
+
+# calculate returns
+sp500_stocks[, returns := (close / shift(close)) - 1, by = .(symbol)]
+spy <- sp500_stocks[symbol == "SPY"]
+sp500_stocks <- sp500_stocks[symbol != "SPY"]
+sp500_stocks <- sp500_stocks[, .(symbol, datetime, close, returns)]
+head(sp500_stocks)
+
+# remove outliers
+sp500_stocks <- sp500_stocks[abs(returns) < 0.48]
+
+```
+
+Prateći opis algoritma, u sljedećem koraku smo izračunali vrijednost gornjeg i donjeg percentila (točka 2 u opisu algoritma) za sve dionice. Također provjeravamo jesu li prinosi niski ili visoki za svako razdoblje (točka 3). Nakon toga sumiramo prinose (0, ekstremno visoke, ekstremno niske) za svaki datum.  
+
+```{r}
+
+# calculate sum of extra negative and positive returns
+sp500_stocks[, p_999 := roll_quantile(returns, 255*8*2, p = 0.999), by = .(symbol)]
+sp500_stocks[, p_001 := roll_quantile(returns, 255*8*2, p = 0.001), by = .(symbol)]
+sp500_stocks[, above := ifelse(returns > p_999, returns - p_999, 0), by = .(symbol)]
+sp500_stocks[, below := ifelse(returns < p_001, abs(returns - p_001), 0), by = .(symbol)]
+sp500_stocks[, above_dummy := ifelse(returns > p_999, 1, 0), by = .(symbol)]
+sp500_stocks[, below_dummy := ifelse(returns < p_001, 1, 0), by = .(symbol)]
+
+```
+
+```{r}
+# get tail risk mesures
+sp500_indicators <- sp500_stocks[, .(below_sum = sum(below, na.rm = TRUE),
+                                     above_sum = sum(above, na.rm = TRUE)
+                                     ), by = .(datetime)]
+sp500_indicators <- sp500_indicators[order(datetime)]
+sp500_indicators[, `:=`(excess = above_sum - below_sum)]
+sp500_indicators[, excess_sma := SMA(excess, 8 * 9)]
+sp500_indicators[, excess_sma_short := SMA(excess, 8 * 1)]
+sp500_indicators <- spy[, .(datetime, close, returns)][sp500_indicators, on = c('datetime')]
+sp500_indicators <- na.omit(sp500_indicators)
+```
+
+Kako bi bolje prezentirali ponašanje indikatora i odnos SPY-a i indikatora u nastavku prikazujemo nekoliko grafova s dinamikom obje serije. Prvo prikazujemo dinamiku *excess* indikatora i dvije SMA verzije indikatora:
+
+```{r}
+# plot excess sma tail returns
+ggplot(sp500_indicators, aes(x = datetime)) +
+  geom_line(aes(y = excess), color = 'blue') +
+  geom_line(aes(y = excess_sma), color = 'red') +
+  geom_line(aes(y = excess_sma_short), color = 'green')
+```
+
+Plava linija prikazuje *raw* indikator dok zelena i crvena linija prikazuju pomične prosjeke (crvene dugi, zelena kratki). Može se primijetiti nekoliko obilježja: 1) serija nema trend 2) postoje klasteri volatilnosti (slično kao za volatilnost prinosa) 3) volatilnost je znatno veća oko financijskih kriza.
+
+Kako bi dobili jasniju sliku kretanja ključnog indikatora pokazujemo kretanje SMA *excess* serije oko financijskih kriza:
+
+```{r}
+# plot excess sma tail returns
+ggplot(sp500_indicators[datetime %between% c('2008-01-01', '2009-01-01')], aes(x = datetime)) +
+  geom_line(aes(y = excess_sma), color = 'red') +
+  ggtitle("2008-2009")
+```
+
+```{r}
+# plot excess sma tail returns
+ggplot(sp500_indicators[datetime %between% c('2020-01-01', '2021-01-01')], aes(x = datetime)) +
+  geom_line(aes(y = excess_sma), color = 'red') +
+  ggtitle("2020-2021")
+```
+
+```{r}
+# plot excess sma tail returns
+ggplot(sp500_indicators[datetime %between% c('2018-01-01', '2019-01-01')], aes(x = datetime)) +
+  geom_line(aes(y = excess_sma), color = 'red') +
+  ggtitle("2018-2019")
+```
+
+Vidljivo je da kod korekcija tržišta indeks poprima snažne negativne vrijednosti. Algoritam prodaje SPY kada vrijednost crvene linije padne ispod -0.005 ili neke druge slične razine.
+
+Gornji grafovi ne otkrivaju dovoljno jasno odnos cijene SPY-a i sumiranih prinosa (prinosi iz točke 3). Stoga na sljedećem grafu prikazujem kretanje cijene SPY-a i razdoblja u kojima je suma ekstremno niskih prinosa vrlo visoka ili vrlo niska (iznad 0.7):
+
+
+```{r}
+vetical_lines_sell <- sp500_indicators[below_sum > 0.6, datetime]
+vetical_lines_buy <- sp500_indicators[above_sum > 0.6, datetime]
+ggplot(sp500_indicators, aes(x = datetime, y = close)) +
+  geom_line() +
+  geom_vline(xintercept = vetical_lines_sell, color = 'red') +
+  geom_vline(xintercept = vetical_lines_buy, color = 'green')
+```
+
+```{r}
+ggplot(sp500_indicators[datetime %between% c('2020-01-01', '2021-01-01')], aes(x = datetime, y = close)) +
+  geom_line() +
+  geom_vline(xintercept = vetical_lines_sell, color = 'red') +
+  geom_vline(xintercept = vetical_lines_buy, color = 'green')
+```
+
+```{r}
+ggplot(sp500_indicators[datetime %between% c('2018-01-01', '2019-01-01')], aes(x = datetime, y = close)) +
+  geom_line() +
+  geom_vline(xintercept = vetical_lines_sell, color = 'red') +
+  geom_vline(xintercept = vetical_lines_buy, color = 'green')
+```
+
+```{r}
+ggplot(sp500_indicators[datetime %between% c('2015-01-01', '2016-01-01')], aes(x = datetime, y = close)) +
+  geom_line() +
+  geom_vline(xintercept = vetical_lines_sell, color = 'red') +
+  geom_vline(xintercept = vetical_lines_buy, color = 'green')
+```
+
+```{r}
+ggplot(sp500_indicators[datetime %between% c('2008-01-01', '2009-01-01')], aes(x = datetime, y = close)) +
+  geom_line() +
+  geom_vline(xintercept = vetical_lines_sell, color = 'red') +
+  geom_vline(xintercept = vetical_lines_buy, color = 'green')
+```
+Na grafovima se vidi da se ekstremno niski prinosi pojavljuju za vrijeme ili malo nakon pojave krize. Čak i ako se ne koristi unutar algoritamskog trgovanja crvene linije se pokazuju kao prilično dobar signal za prodaju dionica.
+
+# OPTIMIZICIJA STRATEGIJE (RIZIK *OVERFITTINGA*!)
+
+MinMAx strategija se temelji na jednom indikatoru - *excess*. Računanje indikatora zahtijeva izbor određenih parametara. Iako načelno nije preporučljivo optimizirati strategiju na backtestu, ovdje ćemo prekršiti ovo pravilo, s namjerom da ispitamo osjetljivost profitabilnosti strategiji je na izbor parametara.
+
+Optimizirat će se dva parametra: 1) duljina SMA serije 2)granica ispod koje prodajemo dionicu. Za SMA pomake ćemo koristiti vrijednosti od 3 do 120 (od dva sata do dva tjedna) uz pomak 3, dok ćemo za granicu koristiti vrijednosti od -0.0001 do -0.015. Ukupno će se na ovaj način testirat 7.500 strategija. Strategije s najboljim rezultatima su:
+
+
+```{r}
+# params
+sma_width <- seq(3, 160, 3)
+threshold <- seq(-0.0001, -0.015, by = -0.0001)
+paramset <- expand.grid(sma_width, threshold)
+colnames(paramset) <- c('sma_width', 'threshold')
+```
+
+```{r}
+# perfromance
+plan(multiprocess(workers = availableCores() - 16))
+
+# backtset
+optimize_strategy <- function(sma_width, threshold) {
+  excess_sma <- SMA(sp500_indicators$excess, sma_width)
+  side <- ifelse(shift(excess_sma) < threshold, 0, 1)
+  returns_strategy <- side * sp500_indicators$returns
+  beckteset_data <- cbind(sp500_indicators[, .(returns)], returns_strategy)
+  beckteset_data <- na.omit(beckteset_data)
+  cum_return <- PerformanceAnalytics::Return.cumulative(beckteset_data)[, 2]
+}
+cum_returns <- future_vapply(1:nrow(paramset),
+                             function(x) optimize_strategy(paramset[x, 1], paramset[x, 2]), numeric(1))
+results <- as.data.table(cbind(paramset, cum_returns))
+x <- results[order(cum_returns, decreasing = TRUE)] %>%
+  head(20)
+datatable(x,
+          rownames = FALSE,
+          escape = FALSE,
+          extensions = 'Buttons',
+          options = list(dom = 'Blfrtip',
+                         buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                         lengthMenu = list(c(10,25,50,-1),
+                                           c(10,25,50,"All")))) %>%
+  DT::formatStyle(columns = c(1, 2, 3, 4, 5, 6), fontSize = '11pt')
+
+```
+
+Neoprezni analitičar bi mogao zaključiti da je moguće ostvarivati kumulativne prinose od 17 000% (17 puta), ako slijedimo prvu strategiju. Takav zaključak je pogrešan! To je samo jedna od 6000 strategija i ona predstavlja snažan *overfit*. Dvadeseta najbolja strategija pokazuje prinos od 16x. Umjesto prikaza najboljih strategija mnogo je korisnije pogledati histogram svih prinosa:
+
+```{r}
+ggplot(results, aes(cum_returns)) +
+  geom_histogram(aes(y=..density..)) +
+  geom_density(fill="#FF6666", alpha = 0.2) +
+  geom_vline(xintercept = 3.22, color = 'red')
+
+```
+
+Crvena linija pokazuje prinos "Kupi i drži strategije". Cilj optimizacije nije identificirati jednu najbolju strategiju nego dobiti dojam o općoj profitabilnosti strategije.
+
+Osim ukupnih prinosa, važna spoznaja se dobiva iz međuodnosa korištenih parametara i kumulativnih prinosa. To pokazuje sljedeći heatmap grafikon svih prinosa:
+
+
+```{r}
+# heatmap and returns
+ggplot(results, aes(x = sma_width, y = threshold, fill = cum_returns)) +
+  geom_tile()
+```
+
+Svjetliji dijelovi na grafikonu označavaju veće prinose. Grafikon otkriva da su najprimjerenije vrijednosti parametara: 1) oko 45 i 120 za SMA pomak 2) oko -0.005 za granicu. Nema potrebe tražiti jednu najbolju strategiju. 
+
+Ako želimo točno utvrditi najbolji SMA pomak, možemo jednostavno izračunati prosječne prinose za sve pomake. Prikazujemo 50 najboljih pomaka:
+
+
+```{r}
+x <- results[, mean(cum_returns, na.rm = TRUE), by = sma_width][order(V1, decreasing = TRUE)] %>% 
+  head(50)
+datatable(x,
+          rownames = FALSE,
+          escape = FALSE,
+          extensions = 'Buttons',
+          options = list(dom = 'Blfrtip',
+                         buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                         lengthMenu = list(c(10,25,50,-1),
+                                           c(10,25,50,"All")))) %>%
+  DT::formatStyle(columns = c(1, 2, 3, 4, 5, 6), fontSize = '11pt')
+
+```
+
+Na sličan način možemo izračunati i 50 najboljih granica:
+
+```{r}
+x <- results[, mean(cum_returns, na.rm = TRUE), by = threshold][order(V1, decreasing = TRUE)] %>% 
+  head(50)
+datatable(x,
+          rownames = FALSE,
+          escape = FALSE,
+          extensions = 'Buttons',
+          options = list(dom = 'Blfrtip',
+                         buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                         lengthMenu = list(c(10,25,50,-1),
+                                           c(10,25,50,"All")))) %>%
+  DT::formatStyle(columns = c(1, 2, 3, 4, 5, 6), fontSize = '11pt')
+```
+
+Zaključno, vrijedilo bi detaljnije ispitati profitabilnost MinMAx strategije sa SMA pomacima 48 (6 dana), 72 (9 dana) i 120 (15 dana) i granicama -0.05, -0.04 i -0.03.  
+
+U prvo koraku ćemo provesti jednostavni, vekrorizirani *backtest* pomoću R paketa Performance analytics. Sljedeći grafikon pokazuje *equity* krivulje za gornje izavbrane pomake SMA pomake i granice:
+
+```{r}
+sma_steps <- c(48, 72, 120)
+thresholds <- c(-0.05, -0.04, -0.03)
+params <- expand.grid(sma_steps, thresholds)
+
+# backtest function
+backtest <- function(sma_step, threshold) {
+  sma_value <- sp500_indicators[, SMA(excess, sma_step)]
+  side <- ifelse(shift(sma_value) < threshold, 0, 1)
+  returns_strategy <- as.data.frame(side * sp500_indicators$returns)
+  colnames(returns_strategy) <- paste('cumulative_returns', sma_step, threshold * -100, sep = '_')
+  return(returns_strategy)
+}
+
+# single backtests
+backtests <- lapply(1:nrow(params), function(i) {
+  x <- backtest(params[i, 1], params[i, 2])
+  x
+})
+backtests <- do.call(cbind, backtests)
+backtests <- cbind(datetime = sp500_indicators$datetime, returns = sp500_indicators$returns, backtests)
+backtests <- as.xts.data.table(as.data.table(backtests))
+charts.PerformanceSummary(backtests, plot.engine = 'ggplot2')
+
+```
+
+
+# BACKTESTING U QUANTCONNECTU
+
+Dosadašnja analiza je samo prvi korak u provjeri isplativosti strategije. *Backtestovi* koje smo proveli su samo okvir. Ne kontroliraju za mnoge skrivene zamke (potencijalni *lookahead bias*, *market impact*, *slips* i td.). Mnogo realniju sliku pruža backtest podataka unutar [Quantconnect](https://www.quantconnect.com/) okruženja. Quantconnect je trenutno, prema našem subjektivnom stavu, najbolje *backtesting* okruženje. Međutim, nedostatak je što je mnogo sporiji od lokalnog razvoja. Ovdje prikazujem *backtesting* rezultate za MinMAx strategiju:
+
+
+```{r}
+backtests <- read_excel("C:/Users/Mislav/Documents/GitHub/alphar/backtests/MinMax.xlsx")
+datatable(backtests,
+          rownames = FALSE,
+          escape = FALSE,
+          extensions = 'Buttons',
+          options = list(dom = 'Blfrtip',
+                         buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                         lengthMenu = list(c(10,25,50,-1),
+                                           c(10,25,50,"All")))) %>%
+  DT::formatStyle(columns = c(1, 2, 3, 4, 5, 6), fontSize = '11pt')
+```
+
+Iz tablice se vidi da strategija koja koristi SMA s pomakom 72 (9 dana) i granicom -0.005 pobjeđuje SPY. Zanimljiv je i obrazac. Strategije ostvaruje niže prinose u godinama kada SPY raste, ali znatno bolje rezultate u razdobljima kada SPY pada. Intuitivno, gubimo na *false positive* okladama, ali zarađujemo mnogo više na *true positive* okladama.
+
+
+
+# POBOLJŠANJE STRATEGIJE
+
+Moguće je testirati nekoliko varijacija modela i testirati mogućnost povećanja profitabilnosti strategije. Nekoliko primjera (neki od ovih su testirani):
+
+1. Dvostruki SMA (istovremeni kratki i dugi SMA pomak). TESTIRANO \checkmark (nešto bolji rezultati na *backtestu*).
+2. Različiti pomaci (SMA, EMA, DEMA, VMA i td.). TESTIRANO \checkmark (rezultati nisu u prosjeku bolji od SMA).
+3. Predikcija glavne indikator varijable pomoću statističkih modela DJELOMIČNO  TESTIRANO (ARIMA model ne daje bolje rezultate).
+4. Korištenje ekstremnih prinosa na drugačiji način. NA primjer, prodati nakon prve crvene linije (graf gore) i postaviti trailing stop (traiing profit taking). DJELOMIČNO TESTIRANO.
+5. Koristiti drugačiju transformaciju originalne *excess* serije (npr. walvelet, *power transform* i sl.)
+6. Probati različita razdoblja kod izračunavanja perventila (korak 2 u algoritmu).
+7. Ideje?
