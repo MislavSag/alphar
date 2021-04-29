@@ -1,0 +1,225 @@
+---
+title: "Exuber"
+author: "Contentio d.o.o."
+date: "`r format(Sys.time(), '%d-%m-%Y')`"
+output:
+  prettydoc::html_pretty:
+    theme: tactile
+    highlight: github
+---
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(warning=FALSE, echo=FALSE, message=FALSE)
+
+library(data.table)
+library(roll)
+library(runner)
+library(ggplot2)
+library(future.apply)
+library(doParallel)
+library(kableExtra)
+library(readxl)
+library(PerformanceAnalytics)
+library(xts)
+library(DT)
+library(exuber)
+library(tidyr)
+source('C:/Users/Mislav/Documents/GitHub/alphar/R/import_data.R')
+
+```
+
+# OPIS STRATEGIJE
+
+Strategija koristi poznati statistički test za identificiranje balona (eng. *bubble*) na finanicijskim tržištima prema radovima Phillips et al. (2015) i Pavlidis et al. (2016). Radi se o testovima eksplozivnosti, koji balone identificiraju pomoću rekurzivnog ADF testa (augmented Dickey Fuller test). ADF test je uobičajeni statistički test za testiranje (ne)stacionarnosti vremenske serije.
+
+Jednostavno rečeno, kada dinamika cijene postane eksplozivna (nagli rast; koeficijent uz pomaknutu varijablu veći od 1; eksplozivan rast), identificiran je balon na tržištu. Exuber test (ovako ćemo dalje nazivati test eksplozivnosti spomenutih autora) se temelji na sadf statistici koja poprima određenu vrijednost. Što je veća sadf vrijednost, veća je vjerojatnost pojave balona. Kada sadf vrijednost prijeđe određenu razinu identificiran je bubble na tržištu. "Određena" razina u izvornim radovima utvrđena je na temelju intervala pouzdanosti, odnosno riječ je o kritičnoj granici (kritična vrijednost se skraćeno se naziva gsadf).
+
+Informacija o pojavi balona može se iskoristiti na dva načina:
+
+1. Kupiti imovinu u balonu. Ovo može izgledati čudno, ali u financijama je dugo poznata teorija racionalnih balona. Dakle, baloni su sastavni dio tržišta i mogu biti rezultat racionalnog ponašanja investitora, a pošto imovina snažno raste u balonu, racionalno je kupiti imovinu u vrijeme balona.
+2. Prodati imovinu koja je u balonu. Budući da je imovina (npr. SPY) naglo rastao u kratkom razdoblju i da je vjerojatno u stanju balona, prodajemo imovinu radi sprečavanja dodatnih gubitaka.
+
+Strategija koju ćemo opisati koristi pristup 2, ali dodajemo još jedan kriterij. Osim kriterija po kojem prodajemo imovinu (SPY) kada sadf statistika prijeđe kritičnu vrijednost (npr. vrijednost 1), nužno je da je u tekućem razdoblju ostvaren pad prinosa. 
+
+
+# OPIS ALGORITMA 
+
+Algoritam se sastoji od sljedećih koraka
+
+1. Univerzum - strategija koristi samo cijene SPY-a kao input podatke. Moguće je koristiti fundamentalne podatke poput P/E omjera, FCF indikatora, DCF indikatora i sl.
+2. Na *rolling windowu* izračunavamo vrijednost Exuber indikatora (sadf).
+3. Uspoređujemo sadf vrijednost iz 2. sa kritičnim vrijednostima uz razinu značajnosti 90%, 95% i 99% ili izabiremo proizvoljnu granicu.
+4. Prodajemo dionicu kada vrijednost indikatora prijeđe kritičnu vrijednost.
+
+
+# ISTRAŽIVANJE
+
+U nastavku prikazujemo rezultate koje smo dobili u istraživačkom dijelu, a kasnije ću prikazati rezultate unutar Quantconnect backtesting okruženja.
+
+Prvi korak je učitavanje podataka. Prvo ćemo koristiti samo zaključne cijene  SPY-a. Osnovna frekventnost je jedan sat (moguće je naravno testirati niže i više frekventnosti). Ostavljamo samo varijable koje su nam potrebne za analizu (*close*), a ostale brišemo. Prikaz podataka i grafički prikaz:
+
+
+```{r}
+# import data
+spy <- fread("D:/market_data/equity/usa/hour/trades_adjusted/SPY.csv")
+spy[, datetime := as.POSIXct(formated)]
+spy <- spy[, .(datetime, c)]
+setnames(spy, "c", "close")
+setorder(spy, datetime)
+head(spy, 15)
+```
+
+```{r}
+ggplot(spy, aes(x = datetime, y = close)) + geom_line()
+```
+
+Prateći opis algoritma, u sljedećem koraku izračunavamo *sadf* vrijednost na *rolling windowu*. Važno je istaknuti da ovo nije uobičajeni način primjene testa. U izvornom radu i radovima koji su kasnije primjenjivali istu proceduru analiza se radi na niskofrekventnim podacima (dnevnim, tjednim), dok mi u analizi koristimo satne podatke. Budući da exuber strategija implicira izbor određenog broja parametara, izračunat ćemo *sadf* vrijednost za nekoliko različitih parametara:
+
+```{r}
+# parametri
+use_log <- c(FALSE)     # koristimo li logaritam zaključne cijene. Budući da autori predlažu korištenje algoritma, koristit ćemo samo TRUE
+windows <- c(50, 100, 200) # duljina prozora za na kojem se racuna bsadf.
+lags <- c(1, 2, 5, 10)           # broj pomaknutih vrijednosti. Autori predlažu vrlo mali broj lagova, pa žemo probati samo s 0 i 1
+params <- expand.grid(use_log, windows, lags)
+colnames(params) <- c("log", "window", "lag")
+
+# tablica (nije bitno za razumijevanje)
+datatable(params,
+          rownames = FALSE,
+          escape = FALSE,
+          extensions = 'Buttons',
+          options = list(dom = 'Blfrtip',
+                         buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                         lengthMenu = list(c(10,25,50,-1),
+                                           c(10,25,50,"All")))) %>%
+  DT::formatStyle(columns = c(1, 2, 3, 4, 5, 6), fontSize = '11pt')
+```
+
+Nakon definiranja parametara, možemo izračunati sadf i ostale vrijednost za sve parametre. Nakon što smo izračunali sve varijable, sljedeći korak je backtesting strategije. Backtesting je vrlo jednostavan. Kada je sadf vrijednost niža od određene granice držimo dionicu, a kada je niža od određene granice, prodajemo dionicu. Potrebno je izabrati 2 parametra. Prvi je izbor jedne od sadf vrijednosti, koju smo izračunali u prethodnom koraku (duljina prozora za izračun sadf vrijednosti, logaritam cijene i broj lagova). Drugi je izbor. Kako bi identificirali optimalan izbor parametara, proveli smo optimizaciju backtesta prilagodbom ova dva parametra. Najbolje rezultate su postignuti za sljedeće strategije:
+
+```{r}
+
+if (file.exists("D:/risks/SPY-radf.csv")) {
+  spy <- fread("D:/risks/SPY-radf.csv")
+  spy[, returns := close / shift(close) - 1]
+} else {
+  # radf roll SPY
+  estimate_radf <- function(close, use_log, window, lag_) {
+  
+    if (use_log) {
+      close <- log(close)
+    }
+  
+    cl <- makeCluster(16L)
+    clusterExport(cl, c("close", "use_log", "window", "lag_", "params"), envir = environment())
+    roll_radf <- runner(
+      x = as.data.frame(close),
+      f = function(x) {
+        library(exuber)
+        library(data.table)
+        y <- exuber::radf(x, lag = lag_)
+        stats <- exuber::tidy(y)
+        bsadf <- data.table::last(exuber::augment(y))[, 4:5]
+        y <- cbind(stats, bsadf)
+        return(y)
+      },
+      k = window,
+      na_pad = TRUE,
+      cl = cl
+    )
+    stopCluster(cl)
+    roll_radf <- lapply(roll_radf, data.table::as.data.table)
+    roll_radf <- data.table::rbindlist(roll_radf, fill = TRUE)[, `:=`(V1 = NULL, id = NULL)]
+    return(roll_radf)
+  }
+  
+  # radf for allo params
+  estimate_radf_params <- function(close, params) {
+    estimates <- lapply(1:nrow(params), function(i) {
+      y <- estimate_radf(close, use_log = params[i, 1], window = params[i, 2], lag_ = params[i, 3])
+      colnames(y) <- paste(colnames(y), params[i, 1], params[i, 2], params[i, 3], sep = "_")
+      y
+    })
+    radf_indicators <- do.call(cbind, estimates)
+    return(radf_indicators)
+  }
+  
+  # calculate for SPY
+  radf <- estimate_radf_params(spy[, .(close)], params)
+  
+  # merge SPY and radf
+  spy <- cbind(spy, radf)
+  fwrite(spy, "D:/risks/SPY-radf.csv")
+}
+```
+
+```{r}
+# backtest
+thresholds <- seq(0, 1.6, 0.2)
+backtest_data <- na.omit(spy)
+backtest_data[, returns := close / shift(close) - 1]
+backtest <- function(returns, indicator, threshold, cum_return = TRUE) {
+  sides <- vector("integer", length(indicator)) 
+  for (i in seq_along(sides)) {
+    if (i == 1 || is.na(indicator[i-1])) {
+      sides[i] <- NA
+    } else if (indicator[i-1] > threshold) {
+      sides[i] <- 0
+    } else {
+      sides[i] <- 1
+    }
+  }
+  sides <- ifelse(is.na(sides), 1, sides)
+  returns_strategy <- returns * sides
+  if (cum_return) {
+    return(PerformanceAnalytics::Return.cumulative(returns_strategy))
+  } else {
+    return(returns_strategy)
+  }
+}
+
+params <- expand.grid(thresholds, colnames(backtest_data)[3:(ncol(backtest_data)-1)], stringsAsFactors = FALSE)
+returns_strategies <- future_vapply(1:nrow(params), 
+                                    function(i) backtest(backtest_data$returns,
+                                                         SMA(backtest_data[, get(params[i, 2])], 8), 
+                                                         params[i, 1]),
+                                    numeric(1))
+optimization_results <- cbind(params, returns_strategies)
+optimization_results <- optimization_results[order(optimization_results$returns_strategies, decreasing = TRUE), ]
+
+```
+
+```{r}
+# sadf 
+sadf_results <- optimization_results[grep("^sadf", optimization_results$Var2), ]
+datatable(sadf_results[1:60, ],
+          rownames = FALSE,
+          escape = FALSE,
+          extensions = 'Buttons',
+          options = list(dom = 'Blfrtip',
+                         buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                         lengthMenu = list(c(10,25,50,-1),
+                                           c(10,25,50,"All")))) %>%
+  DT::formatStyle(columns = c(1, 2, 3, 4, 5, 6), fontSize = '11pt')
+```
+
+Možemo zaključiti da su bolji rezultati postignuti uz kraće duljine prozora (100), veći broj lagova (10, 5, 2) i nižu vrijednosti granica oko 1.
+
+
+```{r}
+returns_strategies <- backtest(backtest_data$returns, backtest_data$sadf_TRUE_100_10, 1.4, cum_return = FALSE)
+backest_xts <- xts(cbind(returns = backtest_data$returns, returns_strategies), order.by = backtest_data$datetime)
+backest_xts <- backest_xts["2004-10/"]
+charts.PerformanceSummary(backest_xts, plot.engine = "ggplot2")
+
+head(backest_xts)
+head(backest_xts[backest_xts$returns_strategies == 0])
+```
+
+```{r, out.width="0.3\\linewidth", include=TRUE, fig.align="center", fig.cap=c("Exuber strategy"), echo=FALSE}
+knitr::include_graphics("C:/Users/Mislav/Documents/GitHub/lean_test/exuber_result_best.html")
+```
+
+
