@@ -1,224 +1,162 @@
+library(evir)
 library(data.table)
-library(Rcpp)
-library(purrr)
-library(ggplot2)
-library(highfrequency)
+library(xts)
 library(quantmod)
-library(dpseg)
-library(future.apply)
-library(anytime)
+library(parallel)         # for the GASS package
+library(naniar)
+library(ggplot2)
+library(mlfinance)
+library(highfrequency)
 library(PerformanceAnalytics)
-library(roll)
-library(TTR)
-library(simfinapi)
-library(parallel)  # for the GASS package
+library(DBI)
+library(RMySQL)
+library(runner)
+library(parallel)
 source('C:/Users/Mislav/Documents/GitHub/alphar/R/parallel_functions.R')
 source('C:/Users/Mislav/Documents/GitHub/alphar/R/outliers.R')
 source('C:/Users/Mislav/Documents/GitHub/alphar/R/import_data.R')
-source('C:/Users/Mislav/Documents/GitHub/alphar/R/execution.R')
 source('C:/Users/Mislav/Documents/GitHub/alphar/R/features.R')
 
-# performance
-plan(multiprocess(workers = availableCores() - 4))  # multiprocess(workers = availableCores() - 8)
 
 
+# UTILS -------------------------------------------------------------------
 
+# preprocessing function
+preprocessing <- function(data, outliers = 'above_daily', add_features = TRUE) {
 
-# PARAMETERS --------------------------------------------------------------
+  # change colnames for spy
+  col_change <- grepl('SPY_', colnames(data))
+  colnames(data)[col_change] <- gsub('SPY_', '', colnames(data)[col_change])
 
-# before backcusum function
-contract = 'SPY'
-freq = 5  # 1 is one minute, 5 is 5 minutes, 60 is hour, 480 is day
-upsample = FALSE
-add_fundamentals = FALSE
-add_vix = FALSE
-# model parameters
-roll_window = 150
-moving = 'none'  # none, sma, ema
-moving_window = 20
-var_threshold = -0.002
-# file name prefix
-now <- gsub(' |:', '-', as.character(Sys.time()))
-file_name <- paste0('var-', contract, '_', now)
+  # remove outliers
+  if (outliers == 'above_daily') {
+    data <- remove_outlier_median(data, median_scaler = 25)
+  }
 
+  # add features
+  if (isTRUE(add_features)) {
+    data <- add_features(data)
+  }
 
+  data <- na.omit(data)
 
-# IMPORT DATA -------------------------------------------------------------
+  return(data)
+}
 
-if (freq < 60) {
-  paste0(contract, freq)
-  # HFD
-  market_data <- import_mysql(
-    contract = paste0(contract, freq),
-    save_path = 'D:/market_data/usa/ohlcv',
-    trading_days = TRUE,
-    upsample = upsample,
+# connect to RMySQL
+connect <- function() {
+  DBI::dbConnect(
     RMySQL::MySQL(),
-    dbname = 'odvjet12_market_data_usa',
+    dbname = 'odvjet12_equity_usa_minute_trades',
     username = 'odvjet12_mislav',
     password = 'Theanswer0207',
     host = '91.234.46.219'
   )
-  if (add_vix) {
-    vix <- import_mysql(
-      contract = paste0(contract, freq),
-      save_path = 'D:/market_data/usa/ohlcv',
-      trading_days = TRUE,
-      upsample = upsample,
-      RMySQL::MySQL(),
-      dbname = 'odvjet12_market_data_usa',
-      username = 'odvjet12_mislav',
-      password = 'Theanswer0207',
-      host = '91.234.46.219'
-    )
-  }
-} else {
-  # LFD
-  market_data <- import_ib(
-    contract = contract,
-    frequencies = ifelse(freq == 60, '1 hour', '1 day'),
-    duration = '30 Y',
-    type = 'equity',
-    trading_days = FALSE
-  )
-  colnames(market_data) <- c('open', 'high', 'low', 'close', 'volume', 'WAP', 'hasGaps', 'count')
-  if (add_vix) {
-    vix <- import_ib(
-      contract = 'VIX',
-      frequencies = ifelse(freq == 60, '1 hour', '1 day'),
-      duration = '30 Y',
-      type = 'index',
-      trading_days = FALSE
-    )
-    colnames(vix) <- c('open', 'high', 'low', 'close', 'volume', 'WAP', 'hasGaps', 'count')
-  }
-}
-
-# FUNDAMENTALS
-if (add_fundamentals) {
-  fundamentals <- simfinapi::sfa_get_statement(Ticker = contract,
-                                               statement = 'all',
-                                               period = 'quarters',
-                                               ttm = TRUE,
-                                               shares = TRUE,
-                                               api_key = '8qk9Xc9scFc0Rbpfrx6PLdaiomvi7Dxc')
-  if (!is.null(fundamentals)) {
-    fundamentals <- janitor::clean_names(fundamentals)
-    fundamentals <- fundamentals[, .(publish_date, shares, sales_per_share)]
-    fundamentals <- xts::xts(fundamentals[, 2:ncol(fundamentals)], order.by = as.POSIXct(fundamentals$publish_date))
-    market_data <- merge(market_data, fundamentals, all = TRUE)
-    market_data$sales_per_share <- zoo::na.locf(market_data$sales_per_share)
-    market_data <- market_data[!is.na(market_data$close), ]
-    market_data$ps <- market_data$close / market_data$sales_per_share
-  }
 }
 
 
+# IMPORT DATA -------------------------------------------------------------
 
-# PREPROCESSING -----------------------------------------------------------
+# import intraday market data
+market_data <- import_mysql(
+  symbols = c('AAPL'),
+  upsample = 10,
+  trading_hours = TRUE,
+  use_cache = FALSE,
+  combine_data = FALSE,
+  save_path = 'D:/market_data/usa/ohlcv',
+  RMySQL::MySQL(),
+  dbname = 'odvjet12_equity_usa_minute_trades',
+  username = 'odvjet12_mislav',
+  password = 'Theanswer0207',
+  host = '91.234.46.219'
+)
 
-# Remove outliers
-market_data <- remove_outlier_median(market_data, median_scaler = 25)
-
-# merge market data and VIX
-if (add_vix) {
-  market_data <- merge(market_data, vix[, 'close'], join = 'left')
-  colnames(market_data)[ncol(market_data)] <- 'vix'
-  market_data <- na.omit(market_data)
-}
-
-# Add features
-market_data <- add_features(market_data)
-
-# Remove NA values
-market_data <- na.omit(market_data)
+# clean data
+market_data <- lapply(market_data, preprocessing, add_features = TRUE)
 
 
 
 # (BACK)CUSUM ---------------------------------------------------------------
 
-# backcusum roll
-back_cusum_test <- function(data, col_name, window_size = 100, side = c('greater', 'less')) {
-  bc <- slider_parallel(
-    .x = as.data.table(data),
-    .f =   ~ {
-      formula_ <- paste0('.$', col_name, ' ~ 1')
-      backCUSUM::SBQ.test(stats::as.formula(formula_), alternative = side)[['statistic']]
+# parallel window backcusum estimation
+x <- as.matrix(as.data.table(market_data[[1]])[, 'standardized_returns'])
+window_lengths <- seq(50, 400, 50)
+bcrolls <- list()
+cl <- makeCluster(availableCores() - 16)
+clusterExport(cl, c('x', 'window_length'))
+for (i in seq_along(window_lengths)) {
+  print(i)
+  bcroll <- runner(
+    x = x,
+    f = function(y) {
+      backCUSUM::SBQ.test(as.formula('y ~ 1'), alternative = 'greater')[['statistic']]
     },
-    .before = window_size - 1,
-    .complete = TRUE,
-    n_cores = -1
+    k = window_lengths[i],
+    na_pad = TRUE,
+    cl = cl
   )
-  bc <- unlist(bc)
-  bc <- c(rep(NA, window_size - 1), bc)
-  return(bc)
+
+  bcrolls[[i]] <- bcroll
 }
+stopCluster(cl)
+results <- cbind(as.data.table(market_data[[1]]), do.call(cbind, lapply(bcrolls, as.data.table)))
+results <- na.omit(results)
+colnames(results)[(ncol(results) - length(window_lengths) + 1):ncol(results)] <- paste0('bcroll_', window_lengths)
+head(results)
 
-# backcusum roll for chooosen variables
-market_data$standardized_returns_greater <- back_cusum_test(market_data, 'standardized_returns', 200, side = 'greater')
-market_data$standardized_returns_greater_sma <- TTR::SMA(market_data$standardized_returns_greater, 100)
-# plot(market_data$standardized_returns_greater_sma[1:10000])
-market_data$standardized_returns_greater_sma_q <- roll::roll_quantile(
-  market_data$standardized_returns_greater_sma,
-  width = 12*8*200, p = 0.95, min_obs = 12*8*30)
-
-# plots
-autoplot(market_data[, c('standardized_returns_greater_q', 'standardized_returns_greater_sma_q')])
-autoplot(market_data[, c('standardized_returns_greater_q', 'standardized_returns_greater_sma_q')])
-
-# generate sides
-results_backcusum <- na.omit(market_data)
-side <- vector(mode = 'integer', length = nrow(results_backcusum))
-indicator <- as.vector(zoo::coredata(results_backcusum$standardized_returns_greater_sma))
-indicator_quantile <- as.vector(zoo::coredata(results_backcusum$standardized_returns_greater_sma_q))
-for (i in 1:nrow(results_backcusum)) {
-  if (i == 1) {
-    side[i] <- NA
-  } else if (indicator[i -1] > indicator_quantile[i-1]) {
-    side[i] <- 0L
-  } else {
-    side[i] <- 1L
+# trading rule
+trade <- function(indicator, q_threshold) {
+  side <- vector(mode = 'integer', length = length(indicator))
+  for (i in seq_along(indicator)) {
+    if (is.na(q_threshold[i]) || is.na(q_threshold[i-1])) {
+      side[i] <- NA
+    } else if (indicator[i - 1] > q_threshold[i - 1]) {
+      side[i] <- 0L
+    } else {
+      side[i] <- 1L
+    }
   }
+  return(side)
 }
-results_backcusum$side_backcusum <- side
-table(results_backcusum$side_backcusum)
-results_backcusum$returns_strategy_backcusum <- results_backcusum$returns * results_backcusum$side_backcusum
-PerformanceAnalytics::charts.PerformanceSummary(
-  results_backcusum[, c('returns', "returns_strategy_backcusum")], plot.engine = 'ggplot2')
+
+# optimization
+back_cusum_cols <- colnames(results)[grep('bcroll', colnames(results))]
+sma_width <- seq(2, 45, 5)
+p <- seq(0.9, 0.99, 0.01)
+paramset <- expand.grid(back_cusum_cols, sma_width, p, stringsAsFactors = FALSE)
+colnames(paramset) <- c('back_cusum_col', 'sma_width', 'threshold')
+
+# optimize
+optimize <- function(x, sma_width, p, returns) {
+  indicator <- unlist(results[, ..x], use.names = FALSE)
+  bcroll_sma <- SMA(indicator, sma_width)
+  q_thres <- roll_quantile(indicator, width = 12*8*200, p = p, min_obs = 12*8*30)
+  side <- trade(bcroll_sma, q_thres)
+  returns_strategy <- side * returns
+  cum_return <- Return.cumulative(na.omit(returns_strategy))
+}
+cum_returns <- future_vapply(1:nrow(paramset),
+                             function(x) optimize(paramset[x, 1],
+                                                  paramset[x, 2],
+                                                  paramset[x, 3],
+                                                  results$returns),
+                             numeric(1))
+benchmark_cum_returns <- Return.cumulative(na.omit(results$returns))
+
+max(cum_returns)
+paramset[which.max(cum_returns), ]
+
+# plot opt results
+ggplot(as.data.table(cum_returns), aes(cum_returns)) + geom_histogram() + geom_vline(xintercept = benchmark_cum_returns)
 
 
-# # Backtest results
-# backtest_results <- lapply(
-#   results[, grepl('bc_', colnames(results))],
-#   function(x) {
-#     lapply(results[, sum_returns_colnames],
-#            function(y) {
-#              backtest(results, x, y)
-#            })
-#   })
-# backtest_results <- purrr::pluck(purrr::flatten(purrr::flatten(backtest_results)))
-# backtest_charts <- backtest_results[seq(2, length(backtest_results), by = 2)]
-# backtest_returns <- backtest_results[seq(1, length(backtest_results), by = 2)]
-#
-# # save charts
-# backtest_charts_names <- lapply(
-#   colnames(results)[grepl('bc_', colnames(results))],
-#   function(x) {
-#     lapply(sum_returns_colnames,
-#            function(y) {
-#              paste0(file_name, x, y, '.png')
-#            })
-#   })
-# backtest_charts_names <- purrr::flatten(backtest_charts_names)
-# purrr::map2(backtest_charts_names, backtest_charts, ~ ggsave(filename = .x, plot = .y))
-#
-# # scalars
-# lapply(backtest_returns, function(x) {
-#   daily_returns <- apply.monthly(x, Return.cumulative)
-#   # sharpe ratio
-#   sr <- PerformanceAnalytics::SharpeRatio.annualized(daily_returns)
-#   cat("sharpe_ratio:", sr[1, 2], "\n")
-#   # cumulative return
-#   cum_return <- PerformanceAnalytics::Return.cumulative(daily_returns)
-#   cat("cumulative_return:", cum_return[1, 2], "\n")
-# })
+# backtest
+indicator <- unlist(results[, bcroll_200], use.names = FALSE)
+bcroll_sma <- SMA(indicator, 12)
+q_thres <- roll_quantile(indicator, width = 12*8*200, p = 0.96, min_obs = 12*8*30)
+side <- trade(bcroll_sma, q_thres)
+returns_strategy <- side * results$returns
+perf <- na.omit(cbind.data.frame(index = results$index, returns = results$returns, returns_strategy))
+perf <- xts(perf[, 2:3], order.by = perf[, 1])
+charts.PerformanceSummary(perf, e)

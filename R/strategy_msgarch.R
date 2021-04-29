@@ -7,90 +7,53 @@ library(quantmod)
 library(future.apply)
 library(PerformanceAnalytics)
 library(MSGARCH)
+library(BatchGetSymbols)
 source('C:/Users/Mislav/Documents/GitHub/alphar/R/parallel_functions.R')
 source('C:/Users/Mislav/Documents/GitHub/alphar/R/outliers.R')
 source('C:/Users/Mislav/Documents/GitHub/alphar/R/import_data.R')
 source('C:/Users/Mislav/Documents/GitHub/alphar/R/features.R')
-
-# performance
-# plan(multiprocess(workers = availableCores() - 4))  # multiprocess(workers = availableCores() - 8)
 
 
 
 # PARAMETERS --------------------------------------------------------------
 
 # before backcusum function
-contract = 'SPY5'
-upsample = FALSE
-std_window = 50
+contract = 'SPY'
+upsample = 60
 
 
 
 # IMPORT DATA -------------------------------------------------------------
 
-
 # HFD
 market_data <- import_mysql(
-  contract = contract,
-  save_path = 'D:/market_data/usa/ohlcv',
-  trading_days = TRUE,
+  symbols = contract,
+  trading_hours = TRUE,
   upsample = upsample,
-  RMySQL::MySQL(),
+  use_cache = TRUE,
+  save_path = 'D:/market_data/usa/ohlcv',
+  drv = RMySQL::MySQL(),
   dbname = 'odvjet12_market_data_usa',
   username = 'odvjet12_mislav',
   password = 'Theanswer0207',
   host = '91.234.46.219'
-)
-vix <- import_mysql(
-  contract = 'VIX5',
-  save_path = 'D:/market_data/usa/ohlcv',
-  trading_days = TRUE,
-  upsample = upsample,
-  RMySQL::MySQL(),
-  dbname = 'odvjet12_market_data_usa',
-  username = 'odvjet12_mislav',
-  password = 'Theanswer0207',
-  host = '91.234.46.219'
-)
+)[[1]]
 
 
 # LFD
-market_data <- import_ib(
-  contract = 'SPY',
-  frequencies = '1 day',
-  duration = '20 Y',
-  type = 'equity',
-  trading_days = FALSE
-)
-colnames(market_data) <- c('open', 'high', 'low', 'close', 'volume', 'WAP', 'hasGaps', 'count')
-# vix <- import_ib(
-#   contract = 'VIX',
-#   frequencies = '1 day',
-#   duration = '20 Y',
-#   type = 'index',
-#   trading_days = FALSE
-# )
-# colnames(vix) <- c('open', 'high', 'low', 'close', 'volume', 'WAP', 'hasGaps', 'count')
-
+market_data <- BatchGetSymbols(tickers = 'SPY', first.date = '1990-01-01')
+market_data <- market_data$df.tickers
 
 
 # PREPROCESSING -----------------------------------------------------------
 
-
 # Remove outliers
 market_data <- remove_outlier_median(market_data, median_scaler = 25)
 
-# merge market data and VIX
-# market_data <- merge(market_data, vix[, 'close'], join = 'left')
-# colnames(market_data)[ncol(market_data)] <- 'vix'
-# market_data <- na.omit(market_data)
-
 # Add features
-market_data <- add_features(market_data)
-
-# lags
+# market_data <- add_features(market_data)
+market_data$returns <- Return.calculate(Cl(market_data))
 market_data$returns_lag <- data.table::shift(market_data$returns)
-market_data$vix_lag <- data.table::shift(market_data$vix)
 
 # Remove NA values
 market_data <- na.omit(market_data)
@@ -107,7 +70,7 @@ msgarch <- CreateSpec(variance.spec = list(model = "eGARCH"),
 models <- list(msgarch)
 
 n.its <- 1500  # number of insample observations
-n.ots <- nrow(market_data$returns) - n.its  # number of outofsample observations
+n.ots <- length(market_data$ret.adjusted.prices) - n.its  # number of outofsample observations
 alpha <- 0.05  # alpha in VaR
 k.update <- 25  # how often to reestimate the model
 
@@ -119,8 +82,8 @@ y_predictions <- matrix(NA, nrow = n.ots, ncol = 1)
 model.fit <- vector(mode = "list", length = length(models))
 for (i in 1:n.ots) {
   cat("Backtest - Iteration: ", i, "\n")
-  y.its <- market_data$returns[i:(n.its + i - 1)] * 100
-  y.ots[i] <- market_data$returns[n.its + i] * 100
+  y.its <- market_data$ret.adjusted.prices[i:(n.its + i - 1)] * 100
+  y.ots[i] <- market_data$ret.adjusted.prices[n.its + i] * 100
   for (j in 1:length(models)) {
     if (k.update == 1 || i %% k.update == 1) {
       cat("Model", j, "is reestimated\n")
