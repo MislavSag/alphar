@@ -15,6 +15,7 @@ remove_outlier_median <- function(data, median_scaler = 20) {
 
   # extract ohlcv from data
   ohlcv <- quantmod::OHLC(data)
+  ohlcv <- ohlcv[, c('open', 'high', 'low', 'close')]
 
   # if data is higher than daily don't remove outliers
   if (deltat(ohlcv) >= 3600) {
