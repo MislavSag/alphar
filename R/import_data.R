@@ -31,9 +31,7 @@ import_blob <- function(symbols,
   assert_int(upsample, lower = 1, upper = 60)
 
   # blob data
-  bl <- storage_endpoint(
-    "https://contentiobatch.blob.core.windows.net/",
-    key="qdTsMJMGbnbQ5rK1mG/9R1fzfRnejKNIuOv3X3PzxoBqc1wwTxMyUuxNVSxNxEasCotuzHxwXECo79BLv71rPw==")
+  bl <- storage_endpoint()
   cont <- storage_container(bl, container)
 
   # read from saved file if exist
