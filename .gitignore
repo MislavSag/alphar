@@ -2,3 +2,7 @@
 .Rhistory
 .RData
 .Ruserdata
+mldata
+.httr-oauth
+backtests
+risks

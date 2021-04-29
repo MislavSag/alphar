@@ -1,36 +1,20 @@
-#
-# This is a Plumber API. In RStudio 1.2 or newer you can run the API by
-# clicking the 'Run API' button above.
-#
-# In RStudio 1.1 or older, see the Plumber documentation for details
-# on running the API.
-#
-# Find out more about building APIs with Plumber here:
-#
-#    https://www.rplumber.io/
-#
-
 library(plumber)
 library(exuber)
 library(fracdiff)
 library(dpseg)
 
-#* @apiTitle Plumber Example API
 
-#* Echo back the input
-#* @param msg The message to echo
-#* @get /echo
-function(msg=""){
-  list(msg = paste0("The message is: '", msg, "'"))
-}
+# load packages
+library(data.table)
+library(mlr3verse)
 
-#* Plot a histogram
-#* @serializer png
-#* @get /plot
-function(){
-  rand <- rnorm(100)
-  hist(rand)
-}
+# import ML model
+model <- readRDS('ml_model_risks.rds')
+
+
+#* @apiTitle AlphaR API
+#* @apiDescription Endpoints for finding alpha for investing on financial markets
+
 
 #* Return the sum of two numbers
 #* @param a The first number to add
@@ -45,7 +29,7 @@ function(a, b){
 #* @param adf_lag The lag length of the Augmented Dickey-Fuller regression (default = 0L)
 #* @post /radf
 function(x, adf_lag){
-  radf(x, minw= 50, lag = adf_lag)
+  radf(x, lag = adf_lag)
 }
 
 #* Fin min_d for fracdiff
@@ -170,4 +154,15 @@ function(x, threshold = -0.001, method = 'pwm', p = 0.999) {
   out <- evir::gpd(x, threshold = threshold, method = method)
   out <- evir::riskmeasures(out, p)[1, 3]
   return(out)
+}
+
+#* ML model
+#* @param features vector of feature values
+#* @post /ml_model_risks
+function(features){
+  features <- data.table(t(features))
+  colnames(features) <- model$model$learner$state$train_task$feature_names
+  predictions <- model$model$learner$predict_newdata(newdata = features)
+  probabilities <- as.vector(predictions$prob)
+  return(probabilities)
 }
