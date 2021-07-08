@@ -10,11 +10,10 @@ library(ggplot2)
 library(future.apply)
 library(cpm)
 library(DescTools)
-source('C:/Users/Mislav/Documents/GitHub/alphar/R/import_data.R')
-source('C:/Users/Mislav/Documents/GitHub/alphar/R/features.R')
+library(leanr)
 
 # for perfromance
-plan(multiprocess(workers = 16))  # multiprocess(workers = availableCores() - 8)
+plan(multiprocess(workers = 8))  # multiprocess(workers = availableCores() - 8)
 
 
 
@@ -36,45 +35,86 @@ filtering = ParamSet$new(
 # filtering$add_dep("vix_threshold", 'filtering', CondEqual$new('vix'))
 # filtering$add_dep("gpd_threshold", 'filtering', CondEqual$new('gpd'))
 
+# CUSUM filter
+CUSUM_Price <- function(data, h){
+  POS <- NEG <- 0
+  index <- NULL
+  diff_data <- base::diff(data)
+  for (i in 1:length(diff_data)){
+    POS <- max(0,POS+diff_data[i])
+    NEG <- min(0,POS+diff_data[i])
+    if(max(POS,-NEG)>=h){
+      index <- c(index, i)
+      POS <- NEG <- 0
+    }
+  }
+  return(index+1)
+}
 
 
 
 # IMPORT DATA -------------------------------------------------------------
 
 # import risks data
-risk_path <- "D:/risks"
-gpd_risks_left_tail <- fread(file.path(risk_path, 'gpd_risks_left_tail.csv'), sep = ';')
-gpd_risks_right_tail <- fread(file.path(risk_path, 'gpd_risks_right_tail.csv'))
-cols <- colnames(gpd_risks_right_tail)[grep('q_|e_', colnames(gpd_risks_right_tail))]
-gpd_risks_right_tail[, (cols) := lapply(.SD, as.numeric), .SDcols = cols]
-gpd_risks_left_tail[, (cols) := lapply(.SD, as.numeric), .SDcols = cols]
-colnames(gpd_risks_left_tail) <- paste0("left_", colnames(gpd_risks_left_tail))
-colnames(gpd_risks_right_tail) <- paste0("right_", colnames(gpd_risks_right_tail))
+# risk_path <- "D:/risks"
+# gpd_risks_left_tail <- fread(file.path(risk_path, 'gpd_risks_left_tail.csv'), sep = ';')
+# gpd_risks_right_tail <- fread(file.path(risk_path, 'gpd_risks_right_tail.csv'))
+# cols <- colnames(gpd_risks_right_tail)[grep('q_|e_', colnames(gpd_risks_right_tail))]
+# gpd_risks_right_tail[, (cols) := lapply(.SD, as.numeric), .SDcols = cols]
+# gpd_risks_left_tail[, (cols) := lapply(.SD, as.numeric), .SDcols = cols]
+# colnames(gpd_risks_left_tail) <- paste0("left_", colnames(gpd_risks_left_tail))
+# colnames(gpd_risks_right_tail) <- paste0("right_", colnames(gpd_risks_right_tail))
 
 # import market data and merge with risks data
-stocks <- import_intraday("D:/market_data/equity/usa/hour/trades_adjusted", "csv")
-stocks <- merge(gpd_risks_left_tail, stocks, by.y = c("symbol", "datetime"),
-                by.x = c('left_symbol', 'left_date'), all.x = TRUE, all.y = FALSE)
-stocks <- merge(stocks, gpd_risks_right_tail, by.y = c("right_symbol", "right_date"),
-                by.x = c('left_symbol', 'left_date'), all.x = TRUE, all.y = FALSE)
-rm(gpd_risks_left_tail, gpd_risks_right_tail)
+# stocks <- import_lean("D:/market_data/equity/usa/hour/trades_adjusted")
+# stocks <- merge(gpd_risks_left_tail, stocks, by.y = c("symbol", "datetime"),
+#                 by.x = c('left_symbol', 'left_date'), all.x = TRUE, all.y = FALSE)
+# stocks <- merge(stocks, gpd_risks_right_tail, by.y = c("right_symbol", "right_date"),
+#                 by.x = c('left_symbol', 'left_date'), all.x = TRUE, all.y = FALSE)
+# rm(gpd_risks_left_tail, gpd_risks_right_tail)
+
+# import Var and ES forecasts
+risk_paths <- list.files("D:/risks/risk-factors/hour/", full.names = TRUE)
+# x <- risk_paths[1]
+var_es_data <- lapply(risk_paths, function(x) {
+  # y <- list.files(x, full.names = TRUE)[1]
+  data_ <- lapply(list.files(x, full.names = TRUE), function(y) {
+    # filter Var and ES model
+    if (grepl("975_GARCH_plain_100_150|975_EWMA_age_100_150", y)) {
+      data_id <- fread(y)
+      colnames(data_id)[2:ncol(data_id)] <- paste0(gsub(".*/|\\.csv", "", y), colnames(data_id)[2:ncol(data_id)])
+      data_id[, symbol := gsub("_.*", "", gsub(".*/|\\.csv", "", y))]
+      data_id <- na.omit(data_id)
+    } else {
+      data_id <- as.data.table(NULL)
+    }
+    data_id
+  })
+  data_[sapply(data_, function(x) nrow(x)) == 0] <- NULL
+  Reduce(function(...) merge(..., by = c("symbol", "datetime"), all = FALSE), data_)
+})
+var_es_data[sapply(var_es_data, function(x) length(x)) == 0] <- NULL
+var_es_data <- rbindlist(var_es_data)
+
+# import market data and merge with risks data
+stocks <- import_lean("D:/market_data/equity/usa/hour/trades_adjusted")
+stocks <- merge(var_es_data, stocks, by = c("symbol", "datetime"), all.x = TRUE, all.y = FALSE)
 
 # import exuber vars
-exuber_data <- lapply(list.files("D:/risks/radf", full.names = TRUE), fread)
-exuber_data <- rbindlist(exuber_data)
-stocks <- merge(stocks, exuber_data, by.x = c("left_symbol", "left_date"),
-                by.y = c('symbol', 'datetime'), all.x = TRUE, all.y = FALSE)
-rm(exuber_data)
+# exuber_data <- lapply(list.files("D:/risks/radf", full.names = TRUE), fread)
+# exuber_data <- rbindlist(exuber_data)
+# stocks <- merge(stocks, exuber_data, by.x = c("left_symbol", "left_date"),
+#                 by.y = c('symbol', 'datetime'), all.x = TRUE, all.y = FALSE)
+# rm(exuber_data)
 
 # import changepoints
-chg <- fread(file.path(risk_path, 'changepoints.csv'))
-stocks <- merge(chg, stocks, by.x = c(".id", "index"),
-                by.y = c('left_symbol', 'left_date'), all.x = TRUE, all.y = FALSE)
-rm(chg)
+# chg <- fread(file.path(risk_path, 'changepoints.csv'))
+# stocks <- merge(chg, stocks, by.x = c(".id", "index"),
+#                 by.y = c('left_symbol', 'left_date'), all.x = TRUE, all.y = FALSE)
+# rm(chg)
 
 # clean stocks
-setorderv(stocks, c('.id', 'index'))
-setnames(stocks, c(".id", "index"), c("symbol", "datetime"))
+setorderv(stocks, c('symbol', 'datetime'))
 stocks <- stocks[!is.na(close)]
 stocks <- stocks[stocks[, .N, by = .(symbol)][N > 500], on = "symbol"] # stock have at least 1 year of data
 
@@ -101,23 +141,28 @@ DT <- na.omit(DT) # omit missing vlaues
 # DT[, (features_num) := lapply(.SD, Winsorize, probs = c(0.03, 0.97)), by = datetime, .SDcols = features_num] # winsorize across dates
 DT <- DT[, (features_num) := lapply(.SD, function(x) dplyr::percent_rank(x)), by = datetime, .SDcols = features_num] # rank across dates
 
-# filtering and labels
+# labels
 sample <- copy(DT)
 sample[, bin := mlfinance::labeling_fixed_time(close, 0.01, horizont = 5 * 8), by = symbol]
 table(sample$bin)
 sample <- sample[bin %in% c(-1, 1)]
 sample[, bin := ifelse(bin == -1, 0, 1)]
-sample <- sample[breaks_370 == TRUE]
+
+# filtering
+cusum_filter_index <- sample[, .I[1] + CUSUM_Price(close, 2) - 1, by = symbol]
+sample <- sample[cusum_filter_index$V1]
+
+# final clean
 sample <- sample[order(datetime)]
 sample[, colnames(sample)[duplicated(colnames(sample))]] <- NULL
 sample[, c("symbol", "datetime", "open", "high", "low", "close", 'N', 'cl_ath')] <- NULL
 sample <- sample[, lapply(.SD, as.numeric)]
 sample[, bin := as.factor(bin)]
+sample <- sample[, .(A_975_GARCH_plain_100_150var_month, bin)]
 str(sample)
-#
-#
-#
-#
+
+
+
 # # EXPLARATOR ANALYSIS -----------------------------------------------------
 #
 # # 1) median across
@@ -397,3 +442,4 @@ saveRDS(best_submodel, file = file_name)
 #   X
 # })
 # names(risks) <- names(risks_dt)
+

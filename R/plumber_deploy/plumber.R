@@ -2,7 +2,9 @@ library(plumber)
 library(exuber)
 library(fracdiff)
 library(dpseg)
-
+library(mrisk)
+library(httr)
+library(quarks)
 
 # load packages
 library(data.table)
@@ -166,3 +168,113 @@ function(features){
   probabilities <- as.vector(predictions$prob)
   return(probabilities)
 }
+
+#* Radf point
+#* @param symbols Vector of symbols
+#* @param date Last date
+#* @param window Window size
+#* @param price_lag Number of lags to use in exuber
+#* @param use_log Use/not use log
+#* @param time Time frequency to use, eg hour minute
+#* @get /radf_point
+function(symbols, date, window, price_lag, use_log, time){
+  use_log <- as.logical(as.integer(use_log))
+  window <- as.numeric(window)
+  price_lag <- as.numeric(price_lag)
+  date <- as.character(as.Date(substr(date, 1, 8), "%Y%m%d"))
+  paste("Arguments: ", symbols, date, window, price_lag, use_log)
+  x <- mrisk::radf_point(symbols, date, window, price_lag, use_log, "15cd5d0adf4bc6805a724b4417bbaafc", time)
+  x
+}
+# symbols = "SPY"
+# date = "20210628000000"
+# window = 100
+# price_lag = 1
+# use_log = 1
+# time = "minute"
+# format(Sys.time(), tz="America/New_York", usetz=TRUE)
+
+#* Radf point sp500
+#* @param date Last date
+#* @param window Window size
+#* @param price_lag Number of lags to use in exuber
+#* @param use_log Use/not use log
+#* @param agg_type Aggregation type
+#* @param number_of_assets Number of assets from SP500 to use
+#* @get /radf_point_sp
+function(date, window, price_lag, use_log, agg_type, number_of_assets){
+  api_key <- "15cd5d0adf4bc6805a724b4417bbaafc"
+  url <- paste0("https://financialmodelingprep.com/api/v3/sp500_constituent?apikey=", api_key)
+  sp500_symbols <- httr::content(httr::GET(url))
+  sp500_symbols <- unlist(lapply(sp500_symbols, function(x) x[["symbol"]]))
+  use_log <- as.logical(as.integer(use_log))
+  window <- as.numeric(window)
+  price_lag <- as.numeric(price_lag)
+  date <- as.character(as.Date(substr(date, 1, 8), "%Y%m%d"))
+  number_of_assets <- as.integer(number_of_assets)
+  radfs <- list()
+  # i = 1
+  for (i in seq_along(sp500_symbols[1:number_of_assets])) {
+     x <- mrisk::radf_point(sp500_symbols[i], date, window, price_lag, use_log, "15cd5d0adf4bc6805a724b4417bbaafc", time = "hour")
+     radfs[[i]] <- cbind(symbol = sp500_symbols[i], x)
+  }
+  result <- rbindlist(radfs)
+  if (agg_type == "std") {
+    measures <- colnames(result)[3:ncol(result)]
+    measures_agg <- result[, lapply(.SD, sd), .SDcols=measures]
+    result <- cbind.data.frame(datetime=max(result$datetime), measures_agg)
+  } else if (agg_type == "null") {
+    result <- as.data.frame(result)
+  }
+  return(result)
+}
+# date = format.Date(Sys.Date(), "%Y%m%d")
+# window = 100
+# price_lag = 1
+# use_log = 1
+# agg_type = "std"
+# number_of_assets = 10
+
+#* VaR and ES
+#* @param x Vector of returns
+#* @param p conf level
+#* @param model model for estimating conditional volatility
+#* @param method method to be used
+#* @param nwin Use/not use log
+#* @param nout Aggregation type
+#* @post /quark
+function(x, p, model, method, nwin, nout) {
+  x <- diff(log(x))
+  y <- rollcast(x = x,
+                p = p,
+                model = model,
+                method = method,
+                nout = nout,
+                nwin = nwin)
+
+  # VaR stats
+  var_1 <- y$VaR[1]
+  var_day <- mean(y$VaR[1:8], na.rm = TRUE)
+  var_week <- mean(y$VaR[1:40], na.rm = TRUE)
+  var_month <- mean(y$VaR, na.rm = TRUE)
+  var_std <- sd(y$VaR)
+
+  # ES stats
+  es_1 <- y$ES[1]
+  es_day <- mean(y$ES[1:8], na.rm = TRUE)
+  es_week <- mean(y$ES[1:40], na.rm = TRUE)
+  es_month <- mean(y$ES, na.rm = TRUE)
+  es_std <- sd(y$ES)
+
+  # merge all in df
+  VaR <- as.data.table(list(var_1 = var_1, var_day = var_day, var_week = var_week, var_month = var_month, var_std = var_std))
+  ES <- as.data.table(list(es_1 = es_1, es_day = es_day, es_week = es_week, es_month = es_month, es_std = es_std))
+  unlist(cbind.data.frame(VaR, ES), use.names = FALSE)
+  return(cbind.data.frame(VaR, ES))
+}
+# x = y
+# p = 0.975
+# model = "EWMA"
+# method = "plain"
+# nwin = 100
+# nout = 150

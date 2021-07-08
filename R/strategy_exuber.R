@@ -6,7 +6,8 @@ library(runner)
 library(future.apply)
 library(parallel)
 library(fmpcloudr)
-source('C:/Users/Mislav/Documents/GitHub/alphar/R/import_data.R')
+library(leanr)
+library(mrisk)
 
 
 # set api token
@@ -14,119 +15,66 @@ APIKEY = "15cd5d0adf4bc6805a724b4417bbaafc"
 fmpc_set_token(APIKEY)
 
 # parameters
-data_freq <- "daily"
-
-# import data
-sp500_symbols <- import_sp500()
-if (data_freq == "daily") {
-  sp500_stocks <- import_daily("D:/market_data/equity/usa/day/trades", "csv")
-  sp500_stocks <- sp500_stocks[, .(symbol, date, adjClose)]
-  setnames(sp500_stocks, c("date", "adjClose"), c("datetime", "close"))
-  sp500_stocks <- sp500_stocks[datetime %between% c(as.Date("2000-01-01"), Sys.Date())]
-  spy <- fmpcloudr::fmpc_price_history("SPY", startDate = "2000-01-01")
-  spy <- as.data.table(spy)
-  spy <- spy[, .(symbol, date, adjClose)]
-  setnames(spy, c("date", "adjClose"), c("datetime", "close"))
-} else {
-  sp500_stocks <- import_intraday("D:/market_data/equity/usa/hour/trades_adjusted", "csv")
-
-}
-sp500_stocks <- sp500_stocks[symbol %in% c(sp500_symbols)]
-
-
-# calculate returns and exctract SPY
-sp500_stocks[, returns := (close / shift(close)) - 1, by = .(symbol)]
-sp500_stocks <- na.omit(sp500_stocks)
-spy <- fmpcloudr::fmpc_price_history("SPY", startDate = "2000-01-01")
-sp500_stocks <- sp500_stocks[symbol != "SPY"]
-sp500_stocks <- sp500_stocks[, .(symbol, datetime, close, returns)]
-
-# remove outliers
-sp500_stocks <- sp500_stocks[abs(returns) < 0.48]
-
-# prepare data
-sp500_stocks <- sp500_stocks[sp500_stocks[, .N, by = .(symbol)][N > 1000], on = "symbol"]
-
-# parameters
+data_freq <- "minute"
+data_freq_multiply <- 15
 use_log <- c(TRUE)
-windows <- c(100, 200, 400)
-lags <- c(1, 2)
+windows <- c(100)
+lags <- c(1, 2, 4, 8)
 params <- expand.grid(use_log, windows, lags)
 colnames(params) <- c("lag", "window", "lag")
 
-# radf roll SPY
-estimate_radf <- function(close, use_log, window, lag_) {
+# import data
+if (data_freq == "hour") {
+  market_data <- import_lean("D:/market_data/equity/usa/hour/trades_adjusted")
+  spy <- import_lean("D:/market_data/equity/usa/hour/trades_adjusted", 'spy')
+  risk_path <- file.path("D:/risks/radf_hour")
 
-  if (use_log) {
-    close <- log(close)
+} else if (data_freq == "minute") {
+  market_data <- leanr::get_market_equities_minutes("D:/market_data/equity/usa/minute", "SPY")
+  risk_path <- file.path("D:/risks/radf-minute")
+
+  # define sample
+  market_data[, time := format.POSIXct(market_data$datetime, "%H:%M:%S")]
+  market_data <- market_data[time %between% c("09:30:00", "16:00:00")]
+
+  # upsample
+  if (data_freq_multiply == 15) {
+    ohlcv <- xts::to.minutes15(as.xts.data.table(market_data[, .(datetime, open, high, low, close, volume)]))
+    market_data <- cbind(symbol = market_data$symbol[1], as.data.table(ohlcv))
+    setnames(market_data, c("symbol", "datetime", "open", "high", "low", "close", "volume"))
   }
-
-  cl <- makeCluster(16L)
-  clusterExport(cl, c("close", "use_log", "window", "lag_", "params"), envir = environment())
-  roll_radf <- runner(
-    x = as.data.frame(close),
-    f = function(x) {
-      library(exuber)
-      library(data.table)
-      y <- exuber::radf(x, lag = lag_)
-      stats <- exuber::tidy(y)
-      bsadf <- data.table::last(exuber::augment(y))[, 4:5]
-      y <- cbind(stats, bsadf)
-      return(y)
-    },
-    k = window,
-    na_pad = TRUE,
-    cl = cl
-  )
-  stopCluster(cl)
-  roll_radf <- lapply(roll_radf, data.table::as.data.table)
-  roll_radf <- data.table::rbindlist(roll_radf, fill = TRUE)[, `:=`(V1 = NULL, id = NULL)]
-  return(roll_radf)
 }
 
-# test function
-x <- estimate_radf(spy$close[1:600], use_log = TRUE, window = 500, lag = 0L)
+# define sample
+sp500_stocks <- market_data[, .(symbol, datetime, close)]
+sp500_stocks <- sp500_stocks[sp500_stocks[, .N, by = .(symbol)][N > max(windows)], on = "symbol"]
 
-# radf roll params
-estimate_radf_params <- function(date_close, params) {
-  estimates <- lapply(1:nrow(params), function(i) {
-    y <- estimate_radf(date_close, use_log = params[i, 1], window = params[i, 2], lag_ = params[i, 3])
-    colnames(y) <- paste(colnames(y), params[i, 1], params[i, 2], params[i, 3], sep = "_")
-    y
-  })
-  radf_indicators <- do.call(cbind, estimates)
-  return(radf_indicators)
-}
-
-# calculate for SPY
-# cols <- apply(expand.grid(c('adf', 'sadf', 'gsadf', 'badf', 'bsadf'), apply(params, 1, paste0, collapse = '_')), 1, paste0, collapse = '_')
-symbols <- unique(sp500_stocks$symbol)
-plan(multiprocess(workers = 16L))
-options(future.globals.maxSize= 850*1024^2) # 850 Mb
-sp <- sp500_stocks[, .(symbol, datetime, close)]
-estimated <- gsub('\\.csv', '', list.files('D:/risks/radf_daily'))
-symbols <- setdiff(symbols, estimated)
-lapply(symbols, function(x) {
-  if (x %in% c("AMCR", 'CVG', "SII", "TSG", "VNT")) {
-    return(NULL)
-  } else {
-    sample <- sp[symbol == x]
-    estimated <- estimate_radf(as.data.frame(sample$close), TRUE, 200, 1L)
-    estimated <- cbind(symbol = x, datetime = sample$datetime, estimated)
-    fwrite(estimated, paste0('D:/risks/radf_daily/', x, '.csv'))
+# calculate radf for all stocks
+directories <- paste0(risk_path, "/", apply(params, 1, function(x) paste0(x, collapse = "-")))
+lapply(directories, function(x) { # create directories if they doesn't exists
+  if (!dir.exists(x)) {
+    print("Create directory")
+    dir.create(x)
   }
 })
+for (dirs in directories) {
+  # dirs <- directories[1]
+  print(dirs)
+  symbols <- unique(sp500_stocks$symbol)
+  estimated <- gsub('\\.csv', '', list.files(dirs))
+  symbols <- setdiff(symbols, estimated)
 
-
-# analyse SPY
-# cols_data_plot <- c('symbol', 'datetime', colnames(test)[grep("bsadf", colnames(test))])
-# data_plot <- test[, ..cols_data_plot]
-# data_plot <- na.omit(data_plot)
-# data_plot <- melt(data_plot, id.vars = c("symbol", "datetime"))
-# data_plot$variable <- paste(data_plot$symbol, data_plot$variable, sep = "_")
-# ggplot(data_plot,
-#        aes(x = datetime, y = value, color = variable)) +
-#   geom_line()
-# ggplot(data_plot[datetime %between% c("2020-03-01", "2020-10-01")],
-#        aes(x = datetime, y = value, color = variable)) +
-#   geom_line()
+  lapply(symbols, function(x) {
+    if (!(x %in% c("PLLL", "PETM"))) {
+      print(x)
+      sample <- sp500_stocks[symbol == x]
+      params_ <- stringr::str_split(gsub(".*/", "", dirs), "-")[[1]]
+      estimated <- roll_radf(as.data.frame(sample$close),
+                             as.logical(as.integer(params_[1])),
+                             as.integer(params_[2]),
+                             as.integer(params_[3]))
+      estimated_appened <- cbind(symbol = x, datetime = sample$datetime, estimated)
+      fwrite(estimated_appened, paste0(dirs, "/", x, '.csv'))
+    }
+  })
+}

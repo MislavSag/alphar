@@ -1,4 +1,6 @@
 library(data.table)
+library(mrisk)
+library(leanr)
 library(httr)
 library(rvest)
 library(ggplot2)
@@ -8,31 +10,135 @@ library(runner)
 # risk models
 library(GAS)
 library(evir)
+library(quarks)
 # performance
 library(parallel)
 library(future.apply)
-source('C:/Users/Mislav/Documents/GitHub/alphar/R/import_data.R')
-source('C:/Users/Mislav/Documents/GitHub/alphar/R/outliers.R')
 
 
 
 # IMPORT DATA -------------------------------------------------------------
 
 # import data
-save_path <- "D:/risks"
-stocks <- import_intraday('D:/market_data/equity/usa/hour/trades_adjusted', 'csv')
-
-# extract sp500 stocks
-sp500 <- c("SPY", import_sp500())
-stocks <- stocks[symbol %in% sp500]
+save_path <- "D:/risks/risk-factors"
+freq <- "minute"
+save_path <- file.path(save_path, freq)
+stocks <- import_lean('D:/market_data/equity/usa/hour/trades_adjusted')
 
 # help vars
 stocks[, N_ :=.N, by = symbol]
 stocks <- setorder(stocks, symbol, datetime)
 stocks[, returns := close / shift(close) - 1, by = symbol]
+stocks <- na.omit(stocks)
+
+#
+# help functions
+get_series_statistics <- function(series) {
+  var_1 <- series[1]
+  var_day <- mean(series[1:8], na.rm = TRUE)
+  var_week <- mean(series[1:40], na.rm = TRUE)
+  var_month <- mean(series, na.rm = TRUE)
+  var_std <- sd(series, na.rm = TRUE)
+  return(list(var_1 = var_1, var_day = var_day, var_week = var_week, var_month = var_month, var_std = var_std))
+}
 
 
-# CHANGEPOINTS ------------------------------------------------------------
+# VAR AND ES RISK MEASURES -----------------------------------------------------
+
+# parameters
+symbol = unique(stocks$symbol)
+symbol = setdiff(symbol, 'SPY')
+p = c(0.95, 0.975, 0.99)
+win_size = c(100, 200, 400, 800)
+model = c("EWMA", "GARCH")
+method = c("plain", "age", "vwhs", "fhs")
+forecast_length = 150
+params <- expand.grid(symbol, p, model, method, win_size, forecast_length, stringsAsFactors = FALSE)
+colnames(params) <- c("symbol", "p", "model", "method", "win_size", "forecast_length")
+params <- params[!(params$model == 'GARCH' & params$method == "fhs"), ]
+
+# get forecasts
+for (i in 1:nrow(params)) {
+
+  # params
+  params_ <- params[i, ]
+  print(params_)
+
+    # create symbol if it doesnt already exists
+  if (!dir.exists(file.path(save_path, tolower(params_$symbol)))) {
+    dir.create(file.path(save_path, tolower(params_$symbol)))
+  }
+
+  # create file name
+  params_$p <- params_$p * 1000
+  file_name <- paste0(paste0(paste(params_, sep = "_"), collapse = "_"), ".csv")
+  file_name <- file.path(save_path, tolower(params_$symbol), file_name)
+  params_$p <- params_$p / 1000
+
+  # cont if file exists
+  if (file.exists(file_name)) {
+    next()
+  }
+
+  # take sample
+  sample_ <- stocks[symbol == params_$symbol]
+
+  # stop if number of rows is smaller than params_$win_size + params_$forecast_length
+  if (nrow(sample_) < params_$win_size + params_$forecast_length ) {
+    next()
+  }
+
+  # set up clusters
+  cl <- makeCluster(16)
+  clusterExport(cl, c("sample_", "params_", "get_series_statistics"), envir = environment())
+
+  # roll estimation
+  roll_quarks <- runner(
+    x = data.frame(y=sample_$returns),
+    f = function(x) {
+      library(quarks)
+      library(data.table)
+      print(x[1])
+      if (params_$method == "fhs") {
+        y <- rollcast(x,
+                      p = params_$p,
+                      model = params_$model,
+                        method = params_$method,
+                      nout = params_$forecast_length,
+                      nwin = params_$win_size,
+                      nboot = 1000
+        )
+      } else {
+        y <- rollcast(x,
+                      p = params_$p,
+                      model = params_$model,
+                      method = params_$method,
+                      nout = params_$forecast_length,
+                      nwin = params_$win_size
+        )
+      }
+      VaR <- as.data.table(get_series_statistics(y$VaR))
+      ES <- as.data.table(get_series_statistics(y$ES))
+      colnames(ES) <- gsub("var_", "es_", colnames(ES))
+      return(cbind.data.frame(VaR, ES))
+    },
+    k = params_$win_size + params_$forecast_length,
+    na_pad = TRUE,
+    cl = cl
+  )
+  stopCluster(cl)
+
+  # clean table
+  risks <- rbindlist(lapply(roll_quarks, as.data.frame), fill = TRUE)[, -1]
+  risks <- cbind.data.frame(datetime = sample_$datetime, risks)
+
+  # save
+  fwrite(risks, file_name)
+}
+
+
+
+# CHANGEPOINTS (FROM HERE OLD CODE) ---------------------------------------
 
 # estimate changepoints using cpm package
 arl0 <- c(370, 500, 600, 700, 800, 900, 1000, 2000, 3000, 4000, 5000, 6000,
@@ -329,6 +435,9 @@ gas_risks <- DT[, risk_estimate_gas(data.table(date, return), params, ncores = 2
 
 
 
+# BACKTEST ----------------------------------------------------------------
+
+
 
 # PLAYGROUND --------------------------------------------------------------
 
@@ -371,30 +480,4 @@ risks_dt <- lapply(risks, as.data.table)
 names(risks_dt) <- names(estimated)
 risks_dt <- lapply(risks_dt, setnames, 'index', 'Datetime')
 # risks_dt <- rbindlist(risks_dt, idcol = TRUE)
-# head(risks_dt)
-# tail(risks_dt)
 save(risks_dt, file = file.path('mldata', 'risks.rda'))
-
-
-
-
-# DIVIDEND AND SPLITS ADJUSTMENTS -----------------------------------------
-
-# dividends <- getDividends('AAPL')
-# splits <- getSplits('AAPL')
-# adj <- TTR::adjRatios(splits, dividends, xts::to.daily(market_data[[1]]$close)[, 4])
-# ratio <- adj[, 1] * adj[, 2]
-# ratio <- as.data.table(ratio)[, index := as.POSIXct(index)]
-# test <- ratio[as.data.table(market_data[[1]])[, .(index, close)], on = 'index', roll = Inf]
-# test[, adjusted := close * Split]
-# plot(x = test$index, y = test$adjusted)
-# ggplot(as.data.table(market_data[[1]]), aes(x = index)) +
-#   geom_line(aes(y = close))
-# ggplot(as.data.table(market_data[[1]])[index %between% c('2005-02-24', '2005-03-01')], aes(x = index)) +
-#   geom_line(aes(y = close))
-# ggplot(as.data.table(market_data[[1]])[index %between% c('2005-06-07', '2005-06-11')], aes(x = index)) +
-#   geom_line(aes(y = close))
-#
-# ggplot(, aes(x = index)) +
-#   geom_line(aes(y = close))
-
