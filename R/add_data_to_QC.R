@@ -38,7 +38,9 @@ get_market_data <- function(symbol, multiply, time, from, to, api_tag = "/histor
 # get data for all symbols
 start_dates <- seq.Date(as.Date("2019-01-01"), Sys.Date() - 1, by = 5)
 end_dates <- start_dates + 5
-for (symbol in symbols) {
+scraped <- gsub(".ZIP", "", toupper(list.files(quantconnect_data_path)))
+symbols_residue <- setdiff(symbols, scraped)
+for (symbol in symbols_residue) {
   print(symbol)
   data_by_symbol <- lapply(seq_along(start_dates), function(i) {
     get_market_data(symbol, 1, 'hour', start_dates[i], end_dates[i])

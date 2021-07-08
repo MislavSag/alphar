@@ -7,7 +7,8 @@ library(xts)
 library(data.table)
 library(quantmod)
 library(PerformanceAnalytics)
-source('R/import_data.R')
+library(leanr)
+library(httr)
 
 
 # Plumber path
@@ -21,34 +22,38 @@ account$account$status == 'active'
 
 # doplets
 drops <- analogsea::droplets()
+droplet_id <- drops$`ubuntu-s-2vcpu-4gb-fra1-01-1617289843492-s-2vcpu-4gb-fra1-01`$id
+ip <- drops$`ubuntu-s-2vcpu-4gb-fra1-01-1617289843492-s-2vcpu-4gb-fra1-01`$networks$v4[[2]]$ip_address
 print(drops)
 
 # install R
 # plumberDeploy::do_provision(217507640)
 
-# install required packages
-analogsea::install_r_package(217507640, "data.table")
-analogsea::install_r_package(217507640, "exuber")
-analogsea::install_r_package(217507640, "fracdiff")
-analogsea::install_r_package(217507640, "xts")
-analogsea::install_r_package(217507640, "dpseg")
-analogsea::install_r_package(217507640, "highfrequency")
-analogsea::install_r_package(217507640, "anytime")
-analogsea::install_r_package(217507640, "purrr")
-analogsea::install_r_package(217507640, "roll")
-analogsea::install_r_package(217507640, "PerformanceAnalytics")
-analogsea::install_r_package(217507640, "GAS")
-analogsea::install_r_package(217507640, "evir")
-analogsea::install_r_package(217507640, "mlr3")
-analogsea::install_r_package(217507640, "mlr3verse")
-analogsea::install_r_package(217507640, "ranger")
-analogsea::install_r_package(217507640, "ranger")
-analogsea::install_github_r_package(217507640, "https://github.com/ottosven/backCUSUM")
+# install required packages (NEED TO DONWLOAD AGAIN IF I CHANGE MY OWN PACKAGE)
+analogsea::install_r_package(droplet_id, "data.table")
+analogsea::install_r_package(droplet_id, "exuber")
+analogsea::install_r_package(droplet_id, "fracdiff")
+analogsea::install_r_package(droplet_id, "xts")
+analogsea::install_r_package(droplet_id, "dpseg")
+analogsea::install_r_package(droplet_id, "highfrequency")
+analogsea::install_r_package(droplet_id, "anytime")
+analogsea::install_r_package(droplet_id, "purrr")
+analogsea::install_r_package(droplet_id, "roll")
+analogsea::install_r_package(droplet_id, "PerformanceAnalytics")
+analogsea::install_r_package(droplet_id, "GAS")
+analogsea::install_r_package(droplet_id, "evir")
+analogsea::install_r_package(droplet_id, "mlr3")
+analogsea::install_r_package(droplet_id, "mlr3verse")
+analogsea::install_r_package(droplet_id, "ranger")
+analogsea::install_r_package(droplet_id, "rvest")
+analogsea::install_r_package(droplet_id, "quarks")
+analogsea::install_github_r_package(droplet_id, "https://github.com/ottosven/backCUSUM")
+analogsea::install_github_r_package(droplet_id, "https://github.com/MislavSag/mrisk")
 
 # upload files
-droplet_ssh(240714478, "pwd")
+droplet_ssh(droplet_id, "pwd")
 droplet_upload(
-  droplet = 240714478,
+  droplet = droplet_id,
   local = 'C:/Users/Mislav/Documents/GitHub/alphar/mlmodels/classif_ranger_tuned_66097a6ccf34ed25.rds',
   remote = '/var/plumber/ml_model_risks.rds',# '/root/var/plumber/alphar/ml_model_risks.rds',
   verbose = TRUE
@@ -56,13 +61,13 @@ droplet_upload(
 
 # remove droplet if already exists
 redeploy <- function() {
-  plumberDeploy::do_remove_api(240714478, 'alphar', delete=TRUE)
+  plumberDeploy::do_remove_api(droplet_id, 'alphar', delete=TRUE)
 
   Sys.sleep(1L)
 
   # Deploy plumber
   plumberDeploy::do_deploy_api(
-    droplet = 240714478,
+    droplet = droplet_id,
     path = 'alphar',
     localPath = plumber_path,
     port = 8001
@@ -73,28 +78,16 @@ redeploy()
 
 
 # prepare data for test
-market_data <- import_mysql(
-  symbols = c('SPY'),
-  upsample = 5,
-  trading_hours = TRUE,
-  use_cache = TRUE,
-  combine_data = FALSE,
-  save_path = 'D:/market_data/usa/ohlcv',
-  RMySQL::MySQL(),
-  dbname = 'odvjet12_market_data_usa',
-  username = 'odvjet12_mislav',
-  password = 'Theanswer0207',
-  host = '91.234.46.219'
-)[[1]]
+market_data <- leanr::import_lean('D:/market_data/equity/usa/hour/trades', tickers = "SPY")
 time <- zoo::index(market_data)
-y <- as.vector(zoo::coredata(Cl(market_data)))
-x <- as.numeric(zoo::index(market_data))
+y <- market_data$close
+x <- market_data$datetime
 
 # test exuber
 # 207.154.227.4
 req_body <- list(x = y[1:600], adf_lag=2)
 req_body <- jsonlite::toJSON(req_body, dataframe = 'rows')
-response <- httr::POST(paste0("http://", '207.154.227.4', "/alphar/radf"),
+response <- httr::POST(paste0("http://", ip, "/alphar/radf"),
                        body=req_body, encode="json")
 httr::content(response, simplifyVector=TRUE)
 
@@ -140,6 +133,36 @@ response <- httr::POST(paste0("http://", '206.81.24.140', "/alphar/ml_model_risk
                        body=req_body, encode="json")
 httr::content(response, simplifyVector=TRUE)
 
+# radf point
+url <- paste0("http://", ip, "/alphar/radf_point")
+p <- GET(url, query = list(symbols = "SPY", date = "20210628000000", window = 100, price_lag=1, use_log = 1, time = "hour"))
+content(p, as = 'text')
+format(Sys.time(), tz="America/New_York", usetz=TRUE)
+p <- GET(url, query = list(symbols = "SPY", date = "20210520000000", window = 100, price_lag=1, use_log = 1, time = "minute"))
+content(p, as = 'text')
+p <- GET(url, query = list(symbols = "BTCUSD", date = "20210519000000", window = 100, price_lag=1, use_log = 1, time = "hour"))
+content(p, as = 'text')
+p <- GET(url, query = list(symbols = "BTCUSD", date = "20210519000000", window = 100, price_lag=1, use_log = 1, time = "minute"))
+content(p, as = 'text')
+
+# radf point sp500
+url <- paste0("http://", ip, "/alphar/radf_point_sp")
+p <- GET(url, query = list(date = "20210608",
+                           window = 100,
+                           price_lag=1,
+                           use_log = 1,
+                           agg_type="std",
+                           number_of_assets=5),
+         httr::timeout(220))
+content(p, as = 'text')
+rbindlist(content(p))
+
+# quarks
+url <- paste0("http://", ip, "/alphar/quarks")
+req_body <- list(x = y, p = 0.975, model = "EWMA", method = "plain", nwin = 100, nout = 150)
+req_body <- jsonlite::toJSON(req_body, dataframe = 'rows')
+response <- httr::POST(paste0("http://", ip, "/alphar/quark"), body=req_body, encode="json")
+httr::content(response, simplifyVector=TRUE)
 
 
 # TEST ML MODELS ----------------------------------------------------------

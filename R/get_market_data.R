@@ -2,11 +2,13 @@ library(data.table)
 library(fmpcloudr)
 library(httr)
 library(zip)
+library(rvest)
+library(stringr)
 
 
 # set fmpcloudr api token
-APIKEY = "15cd5d0adf4bc6805a724b4417bbaafc"
-fmpc_set_token(APIKEY)
+API_KEY = "15cd5d0adf4bc6805a724b4417bbaafc"
+fmpc_set_token(API_KEY)
 
 # get sp 500 stocks
 SP500 = fmpc_symbols_index()
@@ -40,7 +42,7 @@ get_market_equities <- function(symbol, multiply = 1, time = 'hour', from = as.c
 
   x <- GET(paste0('https://financialmodelingprep.com/api/v4/historical-price/',
                   symbol, '/', multiply, '/', time, '/', from, '/', to),
-           query = list(apikey = API_KEY))
+           query = list(apikey = API_KEY), httr::timeout(10L))
   if (x$status_code == 404) {
     return(NULL)
   } else if (x$status_code == 200) {
@@ -62,13 +64,17 @@ get_market_equities <- function(symbol, multiply = 1, time = 'hour', from = as.c
 }
 
 # get changes
-SP500_CHANGES <- lapply(SP500_SYMBOLS, get_ticker_chanes)
+SP500_CHANGES <- lapply(SP500_SYMBOLS, get_ticker_changes)
 SP500_CHANGES <- rbindlist(SP500_CHANGES)
 SP500_SYMBOLS <- unique(c(SP500_SYMBOLS, SP500_CHANGES$ticker_change))
 
 # get data for symbols
 save_market_data <- function(symbols, save_path = 'D:/market_data/equity/usa/hour/trades') {
-  start_dates <- seq.Date(as.Date('2004-01-01'), Sys.Date() - 5, 5)
+  start_dates <- seq.Date(as.Date('2004-01-01'), Sys.Date() - 5, by = 5)
+  if (tail(start_dates, 1) != Sys.Date() - 5) {
+    start_dates <- c(start_dates, Sys.Date() - 5)
+  }
+  tail(start_dates)
   end_dates <- start_dates + 5
   for (symbol in symbols) {
     print(symbol)
@@ -102,6 +108,7 @@ save_market_data <- function(symbols, save_path = 'D:/market_data/equity/usa/hou
 }
 
 # get and save market unadjusted data
-save_path <- 'D:/market_data/equity/usa/hour/trades'
-SP500_UNSRCRAPED <- setdiff(SP500_SYMBOLS, toupper(gsub(".csv", "", list.files(save_path))))
+save_path <- 'D:/market_data/equity/usa/minute'
+SP500_UNSRCRAPED <- setdiff(SP500_SYMBOLS, toupper(gsub(".zip", "", list.files(save_path))))
+SP500_UNSRCRAPED <- setdiff(SP500_UNSRCRAPED, "BRK-B")
 save_market_data(SP500_UNSRCRAPED, save_path = 'D:/market_data/equity/usa/hour/trades')
