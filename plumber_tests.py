@@ -118,3 +118,91 @@ res = requests.post("http://" + IP + "/alphar/ml_model_risks", data=x)
 res_json = res.json()
 print(f'ML model probabilities , {res_json}')
 
+# Radf point
+url = "http://" + IP + "/alphar/radf_point"
+x = {
+    "symbols": "AAPL",
+    "date": "20210101",
+    "window": 100,
+    "price_lag": 1,
+    "use_log": 1,
+    "time": "hour"
+}
+res = requests.get(url, params = x)
+res_json = res.json()
+print(f'Radf point , {res_json}')
+print(f'Radf point sadf, {res_json[0]["sadf"]}')
+
+# Radf point stock minute
+url = "http://" + IP + "/alphar/radf_point"
+x = {
+    "symbols": "AAPL",
+    "date": "20210101",
+    "window": 100,
+    "price_lag": 1,
+    "use_log": 1,
+    "time": "minute"
+}
+res = requests.get(url, params = x)
+res_json = res.json()
+print(f'Radf point stock minute, {res_json}')
+print(f'Radf point sadf stock minute, {res_json[0]["sadf"]}')
+
+# Radf point SP500
+url = "http://" + IP + "/alphar/radf_point_sp"
+x = {
+    "date": "20210101000000",
+    "window": 100,
+    "price_lag": 1,
+    "use_log": 1,
+    "agg_type": "std",
+    "number_of_assets": 10
+}
+res = requests.get(url, params = x)
+res_json = res.json()
+print(f'Radf point SP500, {res_json}')
+print(f'Radf point sadf SP500, {res_json[0]["sadf"]}')
+
+# Radf point crypto
+url = "http://" + IP + "/alphar/radf_point"
+x = {
+    "symbols": "BTCUSD",
+    "date": "20210101",
+    "window": 100,
+    "price_lag": 1,
+    "use_log": 1,
+    "time": "hour"
+}
+res = requests.get(url, params = x)
+res_json = res.json()
+print(f'Radf point crypto, {res_json}')
+print(f'Radf point sadf crypto, {res_json[0]["sadf"]}')
+
+# Radf point crypto minute
+url = "http://" + IP + "/alphar/radf_point"
+x = {
+    "symbols": "BTCUSD",
+    "date": "20210101",
+    "window": 100,
+    "price_lag": 1,
+    "use_log": 1,
+    "time": "minute"
+}
+res = requests.get(url, params = x)
+res_json = res.json()
+print(f'Radf point crypto minute, {res_json}')
+print(f'Radf point sadf crypto minute, {res_json[0]["sadf"]}')
+
+# quark POST
+x = {
+    "x": price.tolist(),
+    "p": 0.975,
+    "model": "EWMA",
+    "method": "plain",
+    "nwin": 100,
+    "nout": 150
+}
+x = json.dumps(x)
+res = requests.post("http://" + IP + "/alphar/quark", data=x)
+res_json = res.json()
+print(f'Quark risk factors , {res_json}')

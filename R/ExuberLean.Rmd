@@ -1,11 +1,15 @@
 ---
-title: "Exuber"
+title: "Exuber Aggergate"
 author: "Contentio d.o.o."
 date: "`r format(Sys.time(), '%d-%m-%Y')`"
+# output: word_document
 output:
   prettydoc::html_pretty:
     theme: tactile
     highlight: github
+params:
+  lean_path: 'C:/Users/Mislav/Documents/GitHub/lean_test/ExuberLocal/optimizations/2021-04-22_09-26-38/31ba6169-b31a-4da8-a92d-d6df29eea480'
+  algortihm_name: ExuberAlgorithm
 ---
 
 
@@ -13,13 +17,31 @@ output:
 
 knitr::opts_chunk$set(warning=FALSE, echo=FALSE, message=FALSE)
 
+library(tidyr)
+library(jsonlite)
+library(kableExtra)
+library(purrr)
+library(data.table)
+library(ggplot2)
+library(PerformanceAnalytics)
+library(DT)
+```
+
+```{r include=FALSE}
+# read json file with results
+test <- 'C:/Users/Mislav/Documents/GitHub/lean_test/ExuberLocal/optimizations/2021-04-22_09-26-38/31ba6169-b31a-4da8-a92d-d6df29eea480'
+results_json_path <- file.path(test, paste0(gsub(".*/", "", test), ".json")) # TEST
+
+results_json_path <- file.path(params$lean_path, paste0(gsub(".*/", "", params$lean_path), ".json"))
+result <- read_json(results_json_path)
+names(result)
 ```
 
 # OPIS STRATEGIJE
 
 Strategija koristi poznati statistički test za identificiranje balona (eng. *bubble*) na finanicijskim tržištima prema radovima Phillips et al. (2015) i Pavlidis et al. (2016). Radi se o testovima eksplozivnosti, koji balone identificiraju pomoću rekurzivnog ADF testa (augmented Dickey Fuller test). ADF test je uobičajeni statistički test za testiranje (ne)stacionarnosti vremenske serije.
 
-Jednostavno rečeno, kada dinamika cijene postane eksplozivna (nagli rast; koeficijent uz pomaknutu varijablu veći od 1; eksplozivan rast), identificiran je balon na tržištu. Exuber test (ovako ćemo dalje nazivati test eksplozivnosti spomenutih autora) se temelji na sadf statistici koja poprima određenu vrijednost. Što je veća sadf vrijednost, veća je vjerojatnost pojave balona. Kada sadf vrijednost prijeđe određenu razinu identificiran je bubble na tržištu. "Određena" razina u izvornim radovima utvrđena je na temelju intervala pouzdanosti, odnosno riječ je o kritičnoj granici (kritična vrijednost se skraćeno se naziva gsadf).
+Jednostavno rečeno, kada dinamika cijene postane eksplozivna (nagli rast; koeficijent uz pomaknutu varijablu veći od 1.2; eksplozivan rast), identificiran je balon na tržištu. Exuber test (ovako ćemo dalje nazivati test eksplozivnosti spomenutih autora) se temelji na sadf statistici koja poprima određenu vrijednost. Što je veća sadf vrijednost, veća je vjerojatnost pojave balona. Kada sadf vrijednost prijeđe određenu razinu identificiran je bubble na tržištu. "Određena" razina u izvornim radovima utvrđena je na temelju intervala pouzdanosti, odnosno riječ je o kritičnoj granici (kritična vrijednost se skraćeno se naziva gsadf).
 
 Informacija o pojavi balona može se iskoristiti na dva načina:
 
@@ -33,9 +55,9 @@ Strategija koju ćemo opisati koristi pristup 2, ali dodajemo još jedan kriteri
 
 Algoritam se sastoji od sljedećih koraka
 
-1. Univerzum - strategija koristi samo cijene SPY-a kao input podatke. Moguće je koristiti fundamentalne podatke poput P/E omjera, FCF indikatora, DCF indikatora i sl.
-2. Na *rolling windowu* izračunavamo vrijednost Exuber indikatora (sadf).
-3. Uspoređujemo sadf vrijednost iz 2. sa kritičnim vrijednostima uz razinu značajnosti 90%, 95% i 99% ili izabiremo proizvoljnu granicu.
+1. Univerzum - strategija koristi samo cijene SPY-a kao input podatke.
+2. Na *rolling windowu* izračunavamo vrijednost Exuber indikatora (sadf). Dakle, uzimamo 100 povijesnih zaključnih cijena sa stanom frekvencijom i računamo sve vrijenosti koje proizlaze iz testa eksplozivnosti (to su skraženo adf, sadf, gasfd, bsadf). 
+3. Uspoređujemo sadf vrijednost iz 2. sa vrijednosti granice koju smo utvrdili kroz backtesting različitih strategija.
 4. Prodajemo dionicu kada vrijednost indikatora prijeđe kritičnu vrijednost.
 
 
@@ -43,14 +65,240 @@ Algoritam se sastoji od sljedećih koraka
 
 Istraživački dio strategije je rađen u R-u, dok je konačni backtest kao i uvijek proveden unutar Lean/Quantconnect okruženja. Napravljena je optimizacija strategije na temelju tri parametra: duljina prozora za koji se računa sadf vrijednost, broj pomaknutih vrijednosti, vrijednost granice.
 
-Rezultati najbolje strategije prikazani su u nižem pdfu (izvještaj je generiran kroz Lean sustav):
+Rezultati najbolje strategije prikazani su u nižem pdfu (izvještaj je generiran kroz Lean sustav). Optimalni parametri koji su pronađeni na temelju optimizacije u Leanu su 1) kritična vrijednost 1.2 b) duljina prozora 100 sati c) logaritam cijene FALSE 4) izbor varijable *sadf*:
 
-<iframe width="100%" height="1000" name="iframe" src="C:/Users/Mislav/Documents/GitHub/lean_test/exuber_result_best.html"></iframe>
+# <iframe width="100%" height="1000" name="iframe" src="C:/Users/Mislav/Documents/GitHub/lean_test/exuber_result_best.html"></iframe>
 
 Izvještaj možete preuzeti klikom na link: 
 
 ```{r echo=FALSE}
 xfun::embed_file('C:/Users/Mislav/Documents/GitHub/lean_test/exuber_result_best.html')
 ```
+
+
+# APPENDIX
+
+```{r}
+# statistics
+algo_stats <- as.data.frame(list(result$Statistics)) %>% 
+  pivot_longer(., cols = everything())
+  
+rows <- seq_len(nrow(algo_stats) %/% 2)
+kable(list(algo_stats[rows,1:2],
+           algo_stats[-rows, 1:2]),
+      col.names = NULL) %>% 
+  kable_styling(full_width = FALSE) %>% 
+  kable_material(c("striped", "hover"))
+```
+
+```{r, out.width='100%'}
+# Equity curve plot
+benchmark <- rbindlist(result$Charts$Benchmark$Series$Benchmark$Values)
+benchmark <- benchmark[y > 0]
+benchmark[, Date := as.POSIXct(x, origin="1970-01-01")]
+benchmark[, prices := y]
+benchmark[, Benchmrk := (prices / shift(prices)) - 1]
+benchmark[, `:=`(x = NULL, y = NULL, prices = NULL)]
+
+strategy <- rbindlist(result$Charts$`Strategy Equity`$Series$`Daily Performance`$Values)
+strategy[, Date := as.POSIXct(x, origin="1970-01-01")]
+strategy[, Strategy := y / 100]
+strategy[, `:=`(x = NULL, y = NULL)]
+
+equity_curve <- strategy[benchmark, on = 'Date']
+equity_curve <- na.omit(equity_curve)
+
+charts.PerformanceSummary(equity_curve, plot.engine = 'plotly')
+
+```
+
+```{r}
+returns <- copy(equity_curve)
+returns[, `:=`(StrategyCumulative = cumprod(1 + Strategy),
+               BenchmarkCumulative = cumprod(1 + Benchmrk))]
+datatable(returns,
+          rownames = FALSE,
+          escape = FALSE,
+          extensions = 'Buttons',
+          options = list(dom = 'Blfrtip',
+                         buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                         lengthMenu = list(c(10,25,50,-1),
+                                           c(10,25,50,"All"))))
+
+```
+
+# ANNUAL RETURNS TABLE
+
+```{r}
+annual_returns <- apply.yearly(as.xts.data.table(returns)[, "Strategy"], Return.cumulative)
+annual_returns <- as.data.table(annual_returns)
+annual_returns[, index := data.table::year(index)]
+mean_return <- mean(annual_returns$Strategy, na.rm = TRUE)
+
+datatable(annual_returns,
+          rownames = FALSE,
+          escape = FALSE,
+          extensions = 'Buttons',
+          options = list(dom = 'Blfrtip',
+                         buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                         lengthMenu = list(c(10,25,50,-1),
+                                           c(10,25,50,"All"))))
+```
+
+```{r}
+ggplot(annual_returns, aes(x = index, y = Strategy)) +
+  geom_bar(stat='identity', fill = "blue") +
+  geom_hline(yintercept = mean_return, color = "red", linetype = "dashed") +
+  coord_flip()
+```
+
+# RETURNS PER TRADE
+
+```{r}
+returns_per_trade <- rbindlist(result$TotalPerformance$ClosedTrades)
+returns_per_trade <- unique(returns_per_trade[, 2:ncol(returns_per_trade)])
+returns_per_trade[, trade_returns := round((ExitPrice / EntryPrice - 1) * 100, 0) / 100]
+
+datatable(returns_per_trade,
+          rownames = FALSE,
+          escape = FALSE,
+          extensions = 'Buttons',
+          options = list(dom = 'Blfrtip',
+                         buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                         lengthMenu = list(c(10,25,50,-1),
+                                           c(10,25,50,"All"))))
+```
+
+```{r}
+ggplot(returns_per_trade[, .(trade_returns)], aes(x = trade_returns)) +
+  geom_bar(fill = "blue") +
+  scale_x_continuous(labels = scales::percent) +
+  geom_vline(xintercept = mean(returns_per_trade$trade_returns), color = "red", linetype = "dashed")
+
+```
+
+# DRAWDOWN
+
+```{r}
+drawdown <- Drawdowns(as.xts.data.table(strategy))
+drawdown <- as.data.table(drawdown)
+setnames(drawdown, "Strategy", "Drawdown")
+
+datatable(drawdown,
+          rownames = FALSE,
+          escape = FALSE,
+          extensions = 'Buttons',
+          options = list(dom = 'Blfrtip',
+                         buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                         lengthMenu = list(c(10,25,50,-1),
+                                           c(10,25,50,"All"))))
+```
+
+```{r}
+ggplot(drawdown, aes(x = index, y = Drawdown)) +
+  geom_line() +
+  scale_y_continuous(labels = scales::percent) +
+  geom_area()
+```
+
+# DAILY RETURNS
+
+```{r}
+
+ggplot(returns[, .(Date, Strategy)], aes(x = Date, y = Strategy)) +
+  geom_bar(stat="identity")
+
+```
+
+# ROLLING SHARPE RATIO (6 MONTHS)
+
+```{r}
+runCumRets <- function(R, n = 252, annualized = FALSE, scale = NA) {
+  R <- na.omit(R)
+  if (is.na(scale)) {
+    freq = periodicity(R)
+    switch(freq$scale, minute = {
+      stop("Data periodicity too high")
+    }, hourly = {
+      stop("Data periodicity too high")
+    }, daily = {
+      scale = 252
+    }, weekly = {
+      scale = 52
+    }, monthly = {
+      scale = 12
+    }, quarterly = {
+      scale = 4
+    }, yearly = {
+      scale = 1
+    })
+  }
+  cumRets <- cumprod(1+R)
+  if(annualized) {
+    rollingCumRets <- (cumRets/lag(cumRets, k = n))^(scale/n) - 1 
+  } else {
+    rollingCumRets <- cumRets/lag(cumRets, k = n) - 1
+  }
+  return(rollingCumRets)
+}
+
+runSharpe <- function(R, n = 252, scale = NA, volFactor = 1) {
+  if (is.na(scale)) {
+    freq = periodicity(R)
+    switch(freq$scale, minute = {
+      stop("Data periodicity too high")
+    }, hourly = {
+      stop("Data periodicity too high")
+    }, daily = {
+      scale = 252
+    }, weekly = {
+      scale = 52
+    }, monthly = {
+      scale = 12
+    }, quarterly = {
+      scale = 4
+    }, yearly = {
+      scale = 1
+    })
+  }
+  rollingAnnRets <- runCumRets(R, n = n, annualized = TRUE)
+  rollingAnnSD <- sapply(R, TTR::runSD, n = n)*sqrt(scale)
+  rollingSharpe <- rollingAnnRets/rollingAnnSD ^ volFactor
+  return(rollingSharpe)
+}
+
+plotRunSharpe <- function(R, n = 252, ...) {
+  sharpes <- runSharpe(R = R, n = n)
+  sharpes <- sharpes[!is.na(sharpes[,1]),]
+  chart.TimeSeries(sharpes, legend.loc="topleft", main=paste("Rolling", n, "period Sharpe Ratio"),
+                   date.format="%Y", yaxis=FALSE, ylab="Sharpe Ratio", auto.grid=FALSE, ...)
+  meltedSharpes <- do.call(c, data.frame(sharpes))
+  axisLabels <- pretty(meltedSharpes, n = 10)
+  axisLabels <- unique(round(axisLabels, 1))
+  axisLabels <- axisLabels[axisLabels > min(axisLabels) & axisLabels < max(axisLabels)]
+  axis(side=2, at=axisLabels, label=axisLabels, las=1)
+}
+```
+
+
+```{r}
+rolling_sharperatio <- as.data.table(runSharpe(as.xts.data.table(returns[, .(Date, Strategy)]), n = 252 / 2))
+
+datatable(rolling_sharperatio,
+          rownames = FALSE,
+          escape = FALSE,
+          extensions = 'Buttons',
+          options = list(dom = 'Blfrtip',
+                         buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                         lengthMenu = list(c(10,25,50,-1),
+                                           c(10,25,50,"All"))))
+```
+
+```{r}
+ggplot(rolling_sharperatio, aes(x = index, y = Strategy)) + 
+  geom_line(color = "blue")
+
+```
+
 
 

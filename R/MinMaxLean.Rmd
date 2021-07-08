@@ -3,11 +3,12 @@ title: "MiinMax strategija"
 author: "Contentio d.o.o."
 date: "`r format(Sys.time(), '%d-%m-%Y')`"
 output:
-  prettydoc::html_pretty:
-    theme: tactile
-    highlight: github
+  html_document:
+    df_print: paged
+  word_document: default
+  pdf_document: default
 params:
-  lean_path: 'C:/Users/Mislav/Documents/GitHub/alphar/backtests/MinMax_SMA_48_004'
+  lean_path: C:/Users/Mislav/Documents/GitHub/alphar/backtests/MinMax_SMA_48_004
 ---
 
 ```{r setup, include=FALSE}
@@ -17,25 +18,26 @@ knitr::opts_chunk$set(warning=FALSE, echo=FALSE, message=FALSE)
 library(data.table)
 library(jsonlite)
 library(PerformanceAnalytics)
-
+library(DT)
+library(ggplot2)
 ```
 
 # OPIS STRATEGIJE
 
-Strategija se temelji na hipotezi pozitivnog odnosa ekstremnih vrijednosti prinosa i sentimenta. Ako dionica SPY-a naraste 0.1% u jednom satu, sentiment je nepromijenjen. Ne očekuju se nagli šokovi u cijeni. Međutim ako SPY padne 2% u jednom satu, očito je da se nešto značajno događa. Ovo je na tragu teorije ekstremnih vrijednosti koja nastoji objasniti dinamiku cijena n repovima distribucije (vrlo velikih padova ili rasta cijena).
+Strategija se temelji na hipotezi pozitivnog odnosa ekstremnih vrijednosti prinosa i sentimenta tržišta. Drugim riječima, hipoteza je da ekstremni pad prinosa stvara medvjeđi sentiment (očekivanje daljnjeg pada tržišta), a ekstremni rast cijena bikov sentiment (rast tržišta=. Ako dionica SPY-a naraste do 0.1% u jednom satu, sentiment je nepromijenjen. Ne očekuju se nagli šokovi u cijeni. Međutim ako SPY padne više od 2% u jednom satu, očito je da se nešto značajno događa. Ovo je na tragu teorije ekstremnih vrijednosti koja nastoji objasniti dinamiku cijena u repovima distribucije (vrlo velikih padova ili rasta cijena).
 
-Budući da financijska serija SPY-a predstavlja samo jednu realizaciju, umjesto same cijene SPY-a, koristit ćemo cijene dionica sastavnica SPY-a. Dakle oko 500 dionica razdoblju ili oko 700 dionica ukupno (ovisno kako su dionice ulazile u indeks ili izlazile iz indeksa). Jednostavno rečeno, ako cijene dionica, koje su sastavnice indeksa počinju *naglo* padati, prodajemo SPY. U suprotnom držimo SPY.
+Budući da financijska serija SPY-a predstavlja samo jednu realizaciju vremenske serije (ne možemo se vračati u prošlost i promatrati različite realizacije), umjesto same cijene SPY-a, koristit ćemo cijene dionica sastavnica SPY-a. Dakle oko 500 dionica razdoblju ili oko 700 dionica ukupno (ovisno kako su dionice ulazile u indeks ili izlazile iz indeksa). Jednostavno rečeno, ako cijene dionica, koje su sastavnice indeksa počinju *naglo* padati, prodajemo SPY. U suprotnom držimo SPY.
 
 # OPIS ALGORITMA 
 
 Algoritam se sastoji od sljedećih koraka
 
-1. Univerzum - u prvom koraku izabiremo dionice koje ćemo koristiti u analizi. U našem slučaju to su sastavnice SPY-a. Od podataka se koriste samo zaključne cijene. Koristi se satna frekvencija. Istraživački dio je pokazao da satna frekvencija daje bolje rezultate od dnevne frekvencije, lai a unutar satne frekvencije ne daju bolje rezultate od satne.
-2. Izračun "ekstremnih" prinosa - za svaku dionicu iz univerzuma računamo 0.999 i 0.001 percentil prinosa u posljednje dvije godine. Ovi prinosi predstavljaju "ekstremne" (vrlo visoke i vrlo niske) prinose koje je ostvarila dionica u prošlosti. Primjerice, za AAPL gornji percentil može biti 3%, a donji percentil -3.5%.
-3. Identificiranje visokih prinosa - ovdje provjeravamo je li zadnji dostupni prinos veći ili manji od gornjeg ili donjeg percentila iz koraka 2. Ako nije, ostavljamo vrijednost nula, u suprotnom spremamo vrijednost ostvarenog prinosa i percentila. Na primjer, ako je AAPL u zadnjem satu ostvario prinos od 1%, zapisujemo nulu. Ako je ostvario 4%, spremamo vrijednost 0.01 (4% -3% + 1%), a kako ostvari prinos -4%, spremamo vrijednost -0.005 (-4% + 3.5%). Ovaj postupak ponavljamo za sve dionice u univerzumu.
-4. Sumiramo sve vrijednosti iz točke 3. Na primjer, AAPL 0, TSLA 0.005, MSFT -0.01 itd. Ovu varijablu možemo nazvati *excess*. Vrijednost joj je pozitivna ako je u ostvareno više pozitivnih ekstremnih prinosa i obrnuto.
-5. U petom koraku transformiramo ključni indikator iz koraka 4 (varijablu *excess*), kako bi lakše pratili dinamiku. Točnije, izračunavamo pomični prosjek za prethodnih n dana. U backtestu se najbolji pokazao pomak od cca 10 dana.
-6. Prodajemo SPY ako je SMA *esxcess* manji od neke vrijednosti (cca -0.05). Intuitivno, **prodajemo SPY kada je prosjek izrazito negativnih prinosa u posljednjih 10 dana (SMA *excess*) porastao**.
+1. Univerzum - u prvom koraku izabiremo dionice koje ćemo koristiti u analizi. U našem slučaju to su sastavnice SPY-a. Od podataka se koriste samo zaključne cijene. Koristi se satna frekvencija. Istraživački dio je pokazao da satna frekvencija daje bolje rezultate od dnevne frekvencije, ali da unutar-satne frekvencije (polusatne, minutne) ne daju bolje rezultate od satne.
+2. Izračun "ekstremnih" prinosa - za svaku dionicu iz univerzuma računamo 0.999 i 0.001 percentil prinosa u posljednje dvije godine. Ovi prinosi predstavljaju "ekstremne" (vrlo visoke i vrlo niske) prinose koje je ostvarila dionica u prošlosti. Primjerice, za AAPL gornji percentil može biti 3%, a donji percentil -3.5%. Broj od 3% dobije se tako da se svi prinosi u posljednje dvije godine poredaju od najmanjeg do najvećeg te se izabire prinos koji je 99.9%. Primjerice, kada bi bilo 1000 prinosa, to bi bio 999-ti. Donji prinos, -3.5% bio 1. Kada bi bilo 2000 prinosa, 99.9 percentil bi bio 1998 i td.
+3. Identificiranje visokih prinosa - ovdje provjeravamo je li zadnji dostupni prinos veći ili manji od gornjeg ili donjeg percentila iz koraka 2. Ako nije, ostavljamo vrijednost nula, u suprotnom spremamo vrijednost razlike ostvarenog prinosa i percentila. Na primjer, ako je AAPL u zadnjem satu ostvario prinos od 1%, zapisujemo nulu. Ako je ostvario 4%, spremamo vrijednost 0.01 (4% -3% = 1%), a kako ostvari prinos -4%, spremamo vrijednost -0.005 (-4% + 3.5%). Ovaj postupak ponavljamo za sve dionice u univerzumu.
+4. Sumiramo sve vrijednosti iz točke 3. Na primjer, AAPL 0 + TSLA 0.005 + MSFT -0.01 = -0.05. Ovu varijablu možemo nazvati *excess*. Vrijednost joj je pozitivna ako je u ostvareno više pozitivnih ekstremnih prinosa nego negativnih ekstremnih prinosa i obrnuto.
+5. U petom koraku transformiramo ključni indikator iz koraka 4 (varijablu *excess*), kako bi lakše pratili dinamiku. Točnije, izračunavamo pomični prosjek za prethodnih n dana. U backtestu se najbolji pokazao pomak od cca 48 sati (ovaj iznos se koristi u *live* trgovanju).
+6. Prodajemo SPY ako je SMA *esxcess* manji od neke vrijednosti (za *live* trgovanje je, na temelju backtesta, izabrana vrijednost -0.004). Intuitivno, **prodajemo SPY kada je prosjek izrazito negativnih prinosa u posljednjih 48 sati (SMA *excess*) porastao**.
 
 # STRATEGIJA U LIVE TRADINGU
 
@@ -70,5 +72,26 @@ equity_curve <- na.omit(equity_curve)
 
 charts.PerformanceSummary(equity_curve, plot.engine = 'plotly')
 
+```
+
+# Cumulative returns table
+
+```{r}
+returns <- copy(equity_curve)
+returns[, `:=`(StrategyCumulative = cumprod(1 + Strategy),
+               BenchmarkCumulative = cumprod(1 + Benchmrk))]
+datatable(returns,
+          rownames = FALSE,
+          escape = FALSE,
+          extensions = 'Buttons',
+          options = list(dom = 'Blfrtip',
+                         buttons = c('copy', 'csv', 'excel', 'pdf', 'print'),
+                         lengthMenu = list(c(10,25,50,-1),
+                                           c(10,25,50,"All"))))
+
+```
+
+```{r}
+names(results[[1]])
 ```
 
