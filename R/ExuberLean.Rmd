@@ -25,6 +25,7 @@ library(data.table)
 library(ggplot2)
 library(PerformanceAnalytics)
 library(DT)
+library(roll)
 ```
 
 ```{r include=FALSE}
@@ -301,4 +302,22 @@ ggplot(rolling_sharperatio, aes(x = index, y = Strategy)) +
 ```
 
 
+# ROLLING BETA
+
+```{r}
+# cors <- roll_cor(strategy$Strategy, benchmark$Benchmrk, width = 22L * 6)
+roll_cors <- roll_cor(as.matrix(equity_curve[, 2:3]), width = 22L * 6)
+cors <- roll_cors[1, 2, ]
+std_strategy <- roll_sd(as.matrix(equity_curve[, 2]), width = 22L * 6)
+std_banchmark <- roll_sd(as.matrix(equity_curve[, 3]), width = 22L * 6)
+roll_beta <- cors * (std_strategy / std_banchmark)
+plot(roll_beta)
+```
+
+
+
+```{r}
+# orders <- rbindlist(result$Orders, fill = TRUE)
+  # head(result$Charts$`Strategy Equity`$Series$Equity$Values)
+```
 

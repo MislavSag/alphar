@@ -7,11 +7,17 @@ library(stringr)
 library(mrisk)
 library(fasttime)
 library(lubridate)
+library(RcppQuantuccia)
 
 
-# set fmpcloudr api token
-API_KEY = "15cd5d0adf4bc6805a724b4417bbaafc"
+
+# set up
+API_KEY = Sys.getenv("APIKEY-FMPCLOUD")
 fmpc_set_token(API_KEY)
+
+# parameters
+setCalendar("UnitedStates::NYSE")
+
 
 # get sp 500 stocks
 SP500 = fmpc_symbols_index()
@@ -52,6 +58,22 @@ get_market_equities <- function(symbol, multiply = 1, time = 'minute', from = as
         query = list(apikey = API_KEY),
         timeout(100))
     }, error = function(e) NA)
+
+  # control error
+  tries <- 0
+  while (is.na(x) & tries < 20) {
+    print("There is an error in scraping market data. Sleep and try again!")
+    Sys.sleep(60L)
+    x <- tryCatch({
+      GET(paste0('https://financialmodelingprep.com/api/v4/historical-price/',
+                 symbol, '/', multiply, '/', time, '/', from, '/', to),
+          query = list(apikey = API_KEY),
+          timeout(100))
+    }, error = function(e) NA)
+    tries <- tries + 1
+  }
+
+  # check if status is ok. If not, try to download again
   if (x$status_code == 404) {
     return(NULL)
   } else if (x$status_code == 200) {
@@ -78,18 +100,25 @@ SP500_CHANGES <- lapply(SP500_SYMBOLS, get_ticker_changes)
 SP500_CHANGES <- rbindlist(SP500_CHANGES)
 SP500_SYMBOLS <- unique(c(SP500_SYMBOLS, SP500_CHANGES$ticker_change))
 
-# hep function
-
-
 # get data for symbols
 save_market_data <- function(symbols, save_path = 'D:/market_data/equity/usa/minute') {
-  dates_seq <- seq.Date(as.Date('2004-01-01'), Sys.Date(), by = 1)
+  dates_seq <- seq.Date(as.Date('2004-01-01'), Sys.Date() - 1, by = 1)
   for (symbol in symbols) {
     print(symbol)
     symbol_path <- file.path(save_path, tolower(symbol))
+
+    # crat path if it doesnt exist, instead get already scraped
     if (!dir.exists(symbol_path)) {
       dir.create(symbol_path)
+    } else {
+      scraped_dates <- list.files(symbol_path)
+      scraped_dates <- gsub("_.*", "", scraped_dates)
+      scraped_dates <- as.Date(scraped_dates, "%Y%m%d")
+      new_dates <- as.Date(setdiff(dates_seq, scraped_dates), origin = "1970-01-01")
+      dates_seq <- new_dates[isBusinessDay(new_dates)]
     }
+
+    # scrap loop
     for (i in seq_along(dates_seq)) {
       day_minute <- get_market_equities(symbol, from = dates_seq[i], to = dates_seq[i])
       if (is.null(day_minute)) {
@@ -107,6 +136,7 @@ save_market_data <- function(symbols, save_path = 'D:/market_data/equity/usa/min
                         Volume = v)]
       day_minute <- day_minute[, .(DateTime, Open, High, Low, Close, Volume)]
 
+      # save
       file_name <- file.path(symbol_path, paste0(date_, "_", tolower(symbol), "_minute_trade.csv"))
       zip_file_name <- file.path(symbol_path, paste0(date_, "_trade.zip"))
       fwrite(day_minute, file_name, col.names = FALSE)
@@ -116,8 +146,17 @@ save_market_data <- function(symbols, save_path = 'D:/market_data/equity/usa/min
   }
 }
 
+############# DELTE NEW TO REPLACE WITH TRUE #################
+# delete all new data
+# files <- list.files('D:/market_data/equity/usa/minute', full.names = TRUE)
+# dates_delete <- format.Date(seq.Date(as.Date("2021-03-01"), Sys.Date(), 1), format = "%Y%m%d")
+# dates_delete <- paste0(dates_delete, "_trade.zip")
+# for (f in files) {
+#   files_date <- list.files(f, full.names = TRUE)
+#   files_date <- files_date[gsub(".+/", "", files_date) %in% dates_delete]
+#   file.remove(files_date)
+# }
+############# DELTE NEW TO REPLACE WITH TRUE #################
+
 # get and save market unadjusted data
-save_path <- 'D:/market_data/equity/usa/minute'
-SP500_UNSRCRAPED <- setdiff(SP500_SYMBOLS, toupper(gsub(".zip", "", list.files(save_path))))
-SP500_UNSRCRAPED <- setdiff(SP500_UNSRCRAPED, c("BRK-B", "NDAQ"))
-save_market_data(SP500_UNSRCRAPED, save_path = 'D:/market_data/equity/usa/minute')
+save_market_data(SP500_SYMBOLS, save_path = 'D:/market_data/equity/usa/minute')

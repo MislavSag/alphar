@@ -4,6 +4,7 @@ library(httr)
 library(zip)
 library(rvest)
 library(stringr)
+library(equityData)
 
 
 # set fmpcloudr api token
@@ -36,79 +37,29 @@ get_ticker_changes <- function(ticker) {
   return(changes)
 }
 
-# function for getting market data
-get_market_equities <- function(symbol, multiply = 1, time = 'hour', from = as.character(Sys.Date() - 7),
-                                to = as.character(Sys.Date())) {
-
-  x <- GET(paste0('https://financialmodelingprep.com/api/v4/historical-price/',
-                  symbol, '/', multiply, '/', time, '/', from, '/', to),
-           query = list(apikey = API_KEY), httr::timeout(10L))
-  if (x$status_code == 404) {
-    return(NULL)
-  } else if (x$status_code == 200) {
-    x <- content(x)
-    return(rbindlist(x$results))
-  } else {
-    x <- RETRY("GET",
-               paste0('https://financialmodelingprep.com/api/v4/historical-price/',
-                      symbol, '/', multiply, '/', time, '/', from, '/', to),
-               query = list(apikey = API_KEY),
-               times = 5)
-    if (x$status_code == 200) {
-      x <- content(x)
-      return(rbindlist(x$results))
-    } else {
-      stop('Error in reposne. Status not 200 and not 404')
-    }
-  }
-}
-
 # get changes
 SP500_CHANGES <- lapply(SP500_SYMBOLS, get_ticker_changes)
 SP500_CHANGES <- rbindlist(SP500_CHANGES)
 SP500_SYMBOLS <- unique(c(SP500_SYMBOLS, SP500_CHANGES$ticker_change))
 
 # get data for symbols
-save_market_data <- function(symbols, save_path = 'D:/market_data/equity/usa/hour/trades') {
-  start_dates <- seq.Date(as.Date('2004-01-01'), Sys.Date() - 5, by = 5)
-  if (tail(start_dates, 1) != Sys.Date() - 5) {
-    start_dates <- c(start_dates, Sys.Date() - 5)
-  }
-  tail(start_dates)
-  end_dates <- start_dates + 5
-  for (symbol in symbols) {
-    print(symbol)
-    data_slice <- list()
-    for (i in seq_along(start_dates)) {
-      data_slice[[i]] <- get_market_equities(symbol, from = start_dates[i], to = end_dates[i])
-    }
-    data_by_symbol <- rbindlist(data_slice)
-    if (length(data_by_symbol) == 0) {
-      print(paste0("No data for symbol ", symbol))
-      next()
-    } else {
-      data_by_symbol <- unique(data_by_symbol)
-      data_by_symbol[, formated := as.POSIXct(formated)]
-      data_by_symbol <- data_by_symbol[order(formated)]
-      data_by_symbol <- data_by_symbol[format(formated, "%H:%M:%S") %between% c("10:00:00", "15:00:00")]
-      data_by_symbol[, `:=`(DateTime = format.POSIXct(as.POSIXct(formated), "%Y%m%d %H:%M"),
-                            Open = o * 10000,
-                            High = h * 10000,
-                            Low = l * 10000,
-                            Close = c * 10000,
-                            Volume = v)]
-      data_by_symbol <- data_by_symbol[, .(DateTime, Open, High, Low, Close, Volume)]
-      file_name <- file.path(save_path, paste0(tolower(symbol), ".csv"))
-      fwrite(data_by_symbol, file_name, col.names = FALSE)
-      zip_file_name <- file.path(save_path, paste0(tolower(symbol), ".zip"))
-      zipr(zip_file_name, file_name)
-      file.remove(file_name)
-    }
+for (symbol in SP500_SYMBOLS) {
+  print(symbol)
+
+  # get data
+  data_by_symbol <- get_fmpcloud_data(symbol, local = "D:/market_data/equity/usa/hour")
+
+  # if empty continue
+  if (is.null(data_by_symbol)) {
+    # save to blob
+    file_name <- paste0(tolower(symbol), ".csv")
+    save_blob_files(data.frame(), file_name, container = "equity-usa-hour")
+  } else {
+    # save to blob
+    file_name <- paste0(tolower(symbol), ".csv")
+    save_blob_files(data_by_symbol, file_name, container = "equity-usa-hour")
   }
 }
 
-# get and save market unadjusted data
-save_path <- 'D:/market_data/equity/usa/minute'
-SP500_UNSRCRAPED <- setdiff(SP500_SYMBOLS, toupper(gsub(".zip", "", list.files(save_path))))
-SP500_UNSRCRAPED <- setdiff(SP500_UNSRCRAPED, "BRK-B")
-save_market_data(SP500_UNSRCRAPED, save_path = 'D:/market_data/equity/usa/hour/trades')
+
+# LAST DATE SHOULD BE YESTERDAY, BECAUSE IT CAN RETRIEVE PART OF TODAY< CHECK !< DELETE NEW DATES

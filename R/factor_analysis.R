@@ -10,9 +10,13 @@ library(roll)       # fast roll
 
 
 
+# setup
+simfinapi::sfa_set_cache_dir("D:/fundamental_data/simfinr_data")
+simfinapi::sfa_set_sfplus(sfplus = TRUE)
+
 # sample data
-load('./data/data_ml.RData')
-head(data_ml)
+# load('./data/data_ml.RData')
+# head(data_ml)
 
 # get most liquid companies (for al comanies resultsPerPage has to be lower than 1)
 # data_req <- '
@@ -44,14 +48,13 @@ head(data_ml)
 
 # get all firms
 ids <- sfa_get_entities(api_key = "8qk9Xc9scFc0Rbpfrx6PLdaiomvi7Dxc")
-ids <- ids[1:500]
-firms_info <- sfa_get_info(SimFinId = ids$SimFinId,
-                           cache_dir = './data',
+ids <- ids[ticker %in% c("AAPL", "TSLA", "T", "V", "BABA", "AAL", "FB", "F", "NVDA", "BAC"), ]
+firms_info <- sfa_get_info(simfin_id = ids$simfin_id,
                            api_key = "8qk9Xc9scFc0Rbpfrx6PLdaiomvi7Dxc")
-prices <- sfa_get_prices(SimFinId = ids$SimFinId, ratios = TRUE,
-                         cache_dir = './data',
+prices <- sfa_get_prices(simfin_id = ids$simfin_id,
+                         ratios = TRUE,
                          api_key = "8qk9Xc9scFc0Rbpfrx6PLdaiomvi7Dxc")
-statements <- sfa_get_statement(SimFinId = ids$SimFinId,
+statements <- sfa_get_statement(simfin_id = ids$simfin_id,
                                 statement = 'all',
                                 period = 'quarters',
                                 ttm = TRUE,

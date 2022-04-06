@@ -1,3 +1,11 @@
+### STEPS TO CHECK WHEN ADDING NEW FUNCTION
+# 1. check ig package we use is installed on droplet. Check for side pacakages (e. g. utils)
+# 2. check if we have load package in plumber file with library
+# 3. check endpoint in plumber and test
+# 4. check argument name in plumber and test
+# 5. check the data exists for the mlr3 model
+# 6. check the plumber is redeployed
+
 library(plumber)
 library(exuber)
 library(fracdiff)
@@ -5,13 +13,19 @@ library(dpseg)
 library(mrisk)
 library(httr)
 library(quarks)
+library(Rcatch22)
+library(mlr3automl)
+library(mlr3extralearners)
+library(backCUSUM)
 
 # load packages
 library(data.table)
 library(mlr3verse)
 
 # import ML model
-model <- readRDS('ml_model_risks.rds')
+model = readRDS('ml_model_risks.rds')
+model_hft = readRDS('ml_model_hft.rds')
+# model_hft = readRDS('R/plumber_deploy/ml_model_hft.rds')
 
 
 #* @apiTitle AlphaR API
@@ -110,6 +124,25 @@ function(time, price, critical_value = 0.4, method_ = 'detPer', k_time = 10,
   return(alpha)
 }
 
+
+#* Backcusum filter
+#* @param returns
+#* @post /backcusumfilter
+function(returns) {
+
+  # returns <- rnorm(200)
+
+  # calualte backcusum returns
+  y <- na.omit(returns)
+  y <- SBQ.test(as.formula('y ~ 1'), alternative = 'greater')# [['statistic']]
+  results <- c(y[['statistic']], as.integer(y[['rejection']]))
+  names(results) <- c("statistics", paste0("backcusum_rejections_", as.numeric(names(y[['rejection']])) * 1000))
+  results <- as.data.table(as.list(results))
+
+  return(results)
+}
+
+
 #* BackCUSUM
 #* @param x vector of values
 #* @param alternative look at BQ.test docs
@@ -158,6 +191,7 @@ function(x, threshold = -0.001, method = 'pwm', p = 0.999) {
   return(out)
 }
 
+
 #* ML model
 #* @param features vector of feature values
 #* @post /ml_model_risks
@@ -168,6 +202,34 @@ function(features){
   probabilities <- as.vector(predictions$prob)
   return(probabilities)
 }
+
+
+#* mlr3 hft model
+#* @param close close prices
+#* @post /ml_model_hft
+function(close) {
+
+  # FOR TEST
+  # close = get_daily_prices("SPY", Sys.Date() - 1000, Sys.Date())
+  # close = close$close
+
+  # calcualte features
+  exuber_600_4_gsadf <- radf(tail(close, 600), minw = psy_minw(close), lag = 4L)
+  exuber_600_4_gsadf <- exuber::tidy(exuber_600_4_gsadf)
+  exuber_600_4_gsadf <- exuber_600_4_gsadf$gsadf
+  catch22_CO_Embed2_Dist_tau_d_expfit_meandiff_264 <- Rcatch22::CO_Embed2_Dist_tau_d_expfit_meandiff(tail(close, 264))
+
+  # merge features
+  features <- data.table(
+    exuber_600_4_gsadf = exuber_600_4_gsadf,
+    catch22_CO_Embed2_Dist_tau_d_expfit_meandiff_264 = catch22_CO_Embed2_Dist_tau_d_expfit_meandiff_264)
+
+  # make predictions
+  predictions <- model_hft$learner$model$learner$predict_newdata(newdata = features)
+  probabilities <- as.vector(predictions$prob)
+  return(probabilities)
+}
+
 
 #* Radf point
 #* @param symbols Vector of symbols

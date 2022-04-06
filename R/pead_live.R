@@ -6,14 +6,25 @@ library(mlr3verse)
 library(mlr3extralearners)
 library(future.apply)
 library(PerformanceAnalytics)
+library(kableExtra)
+library(DT)
+library(tidyr)
+library(blastula)
 
+
+# parameters
+start_event_date <- Sys.Date() - 1
+
+# globals
+mlr3model_path <- file.path('D:/mlfin/mlr3_models')
 
 # set fmpcloudr api token
 API_KEY = "15cd5d0adf4bc6805a724b4417bbaafc"
 fmpc_set_token(API_KEY)
 
 # import mlr3 benchmark results
-list.files('C:/Users/Mislav/Documents/GitHub/alphar/mlmodels')
+list.files('D:/mlfin/mlr3_models')
+model_file <- list.files('D:/mlfin/mlr3_models', full.names = TRUE)[1]
 model_file <- 'C:/Users/Mislav/Documents/GitHub/alphar/mlmodels/bmr_results-20210702-084320.rds'
 bmr_results <- readRDS(model_file)
 autoplot(bmr_results) + theme(axis.text.x = element_text(angle = 45, hjust = 1))
@@ -33,7 +44,7 @@ get_earnings_announcement <- function(from, to) {
   result <- rbindlist(httr::content(p))
   return(result)
 }
-ea <- get_earnings_announcement(Sys.Date() - 30, Sys.Date())
+ea <- get_earnings_announcement(start_event_date, Sys.Date())
 ea <- ea[!is.na(ea$epsEstimated)]
 ea[, date := as.Date(date)]
 ea[, event_date := as.Date(date)]
@@ -211,7 +222,31 @@ fundamentals[, .(ebitgrowth, acceptedDateFundamentals, fillingDate)]
 # A <- fundamentals[, .(symbol, acceptedDate, ebitgrowth)][A[, .(symbol, date, volume_month)], on = c(symbol = "symbol", "acceptedDate" = "date")]
 A <- fundamentals[A, on = c(symbol = "symbol", "acceptedDate" = "date")]
 A <- A[!is.na(ebitgrowth)]
-A[, .(symbol, event_date, acceptedDate, fillingDate)]
+A[, .(symbol, event_date, acceptedDate, fillingDate, eps_diff)]
+
+# stop if A is empty; there are no new cases that fulfill or requirements
+if (nrow(A) == 0) {
+  email <- compose_email(
+    body = md(
+"Pozdrav,
+
+Nema novih predikcija za PEAD strategiju na današnji dan.
+
+
+Lijep pozdrav,
+
+Mislav Šagovac"),
+    footer = md(paste0("Email sent on ", add_readable_time(), "."))
+  )
+  email %>%
+    smtp_send(
+      to = c("josko.maric@snpectinatus.hr", "andrea.gazdek@snpectinatus.hr", "mislav.sagovac@contentio.biz"),
+      from = "mislav.sagovac@contentio.biz",
+      subject = enc2utf8("ML predikcije za današnji dan"),
+      credentials = creds_file("blastula_creds")
+    )
+  stop("No Pead cases for today.")
+}
 
 
 
@@ -233,14 +268,15 @@ for (i in seq_along(trues)) {
 }
 predict_data[, best_models$task[[1]]$target_names := as.factor(trues)]
 predict_data <- cbind(predict_data[, .(symbol, event_date, bin)], predict_data[, ..feature_names])
-str(predict_data[, .(symbol, event_date, bin)])
-
+cols <- colnames(predict_data)[4:ncol(predict_data)]
+predict_data[, (cols) := lapply(.SD, as.numeric), .SDcols = cols]
+if (nrow(predict_data) == 1) {
+  predict_data <- rbind(predict_data, predict_data)
+}
 
 # make predictions
-task_pred = TaskClassif$new(predict_data[, .SD, .SDcols = !c("event_date")], id = "mlfin_holdout", target = "bin")
-task_pred$set_col_roles("symbol", roles = "name")
 predictions <- lapply(best_models$learner, function(x) {
-  y <- as.data.table(x$learner$predict_newdata(task_pred$data()))
+  y <- as.data.table(x$learner$predict_newdata(newdata = predict_data))
   colnames(y) <- paste(colnames(y), x$id, sep = "_")
   y
 })
@@ -248,18 +284,66 @@ predictions <- do.call(cbind, predictions)
 colnames(predictions)[2] <- "truth"
 predictions[, grep("row_ids|truth_", colnames(predictions)) := NULL]
 predictions <- cbind(predict_data[, .(symbol, event_date)], predictions)
+predictions <- unique(predictions)
 setorder(predictions, "event_date")
+colnames(predictions) <- gsub(".tuned", "", colnames(predictions))
+
+# save predicitons
+fwrite(predictions, file.path("D:/mlfin/predictions_ea", paste0("predictions-", as.character(Sys.Date()), ".csv")))
+
+# nice table
+# mltbl <- data.table::melt(predictions,
+#                           id.vars = c("symbol", "event_date"),
+#                           measure.vars = patterns("classif"),
+#                           variable.factor = FALSE)
+# mltbl[, model := gsub(".*\\.", "", variable)]
+# mltbl[, prediction := ifelse(grep("response", variable), value, NA), by = model]
+# mltbl <- mltbl[!grepl("response", variable)]
+# mltbl[, variable := gsub("_class.*", "", variable)]
+# mltbl <- as.data.table(pivot_wider(mltbl, names_from = variable))
+# cols <- colnames(mltbl)[5:7]
+# mltbl[, (cols) := lapply(.SD, function(x) round(as.numeric(x), 2)), .SDcols = cols]
+# kable(mltbl, align = "c") %>%
+#   kableExtra::kable_styling(full_width = FALSE)
+
+# create rmarkdown report
+file_save <- paste0("D:/mlfin/predictions_ea/", "Pead-", Sys.Date(), ".html")
+rmarkdown::render("R/Pead.Rmd", params = list(predictions = predictions), output_file = file_save)
+
+# send Rmarkdown report by e-mail
+email <- compose_email(
+  body = md(
+"Pozdrav,
+
+U privitku se nalaze ML predikcije za današnji dan.
+
+
+Lijep pozdrav,
+
+Mislav Šagovac"),
+    footer = md(paste0("Email sent on ", add_readable_time(), "."))
+  ) %>%
+  add_attachment(
+    file = file.path(file_save)
+  )
+# creds(user = "mislav.sagovac+contentio.biz", provider = NULL, host = "mail.contentio.biz", port = 587, use_ssl = TRUE)
+email %>%
+  smtp_send(
+    # to = "mislav.sagovac@contentio.biz",
+    to = c("josko.maric@snpectinatus.hr", "andrea.gazdek@snpectinatus.hr", "mislav.sagovac@contentio.biz"),
+    from = "mislav.sagovac@contentio.biz",
+    subject = enc2utf8("ML predikcije za današnji dan"),
+    credentials = creds_file("blastula_creds")
+  )
+
 
 
 # compare with true
-holdout_set <- data.frame(truth = as.factor(predictions$truth),
-                          res = predictions$response_classif.ranger.tuned)
-holdout_set <- holdout_set[holdout_set$res != 0, ]
-holdout_set$truth <- droplevels(holdout_set$truth)
-holdout_set$res <- droplevels(holdout_set$res)
-mlr3measures::confusion_matrix(holdout_set$truth, holdout_set$res, "1")
-cols <- c(1:3, 8:11)
-predictions[truth == 1, ..cols]
-
-
-
+# holdout_set <- data.frame(truth = as.factor(predictions$truth),
+#                           res = predictions$response_classif.ranger.tuned)
+# holdout_set <- holdout_set[holdout_set$res != 0, ]
+# holdout_set$truth <- droplevels(holdout_set$truth)
+# holdout_set$res <- droplevels(holdout_set$res)
+# mlr3measures::confusion_matrix(holdout_set$truth, holdout_set$res, "1")
+# cols <- c(1:3, 8:11)
+# predictions[truth == 1, ..cols]

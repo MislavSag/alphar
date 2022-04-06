@@ -1,0 +1,170 @@
+---
+title: "ExuberOptimization"
+author: "Contentio d.o.o."
+date: "7/12/2021"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+
+# import packages
+library(data.table)
+library(leanr)
+library(PerformanceAnalytics)
+library(TTR)
+library(fasttime)
+library(lubridate)
+library(ggplot2)
+library(future.apply)
+library(kerasgenerator)
+library(mlr3verse)
+library(reticulate)
+
+# set python enviroment
+reticulate::use_python("C:/ProgramData/Anaconda3/python.exe")
+```
+
+```{python}
+# import python packages
+from sktime.classification.interval_based import TimeSeriesForestClassifier
+from sktime.datasets import load_arrow_head
+from sktime.utils.data_processing import from_3d_numpy_to_nested
+from sktime.forecasting.model_selection import temporal_train_test_split
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+import pandas as pd
+import numpy as np
+```
+
+
+```{r}
+# parameters
+data_freq = "hour"
+tickers = "SPY" # if all tickers set to NA
+```
+
+```{r}
+# import spy market_data
+radf_data_path <- paste0("D:/risks/radf-", data_freq)
+if (data_freq == "hour") {
+  spy <- import_lean('D:/market_data/equity/usa/hour/trades_adjusted', tickers)
+  spy[, returns := close / shift(close) - 1]
+} else if (data_freq == "minute") {
+  spy <- get_market_equities_minutes('D:/market_data/equity/usa/minute', tickers)
+  spy[, time := format.POSIXct(datetime, "%H:%M:%S")]
+  spy <- spy[time %between% c("08:00:00", "16:00:00")]
+}
+```
+
+```{r}
+# import radf data
+radf_data_files <- list.files(radf_data_path, full.names = TRUE)
+radf_data <- lapply(radf_data_files, function(x) {
+  spy_file <- list.files(x, pattern = "SPY", full.names = TRUE)
+  if (length(spy_file) != 0) {
+    y <- fread(spy_file)
+    y[, id := gsub(".*/|\\.csv", "", x)]
+  } else {
+   y <- NULL
+  }
+  y
+})
+radf_data <- rbindlist(radf_data)
+radf_data <- merge(radf_data, spy[, .(datetime, close)], by = "datetime", all.x = TRUE, all.y = FALSE)
+setorderv(radf_data, c("id", "datetime"))
+radf_data[, returns := close / shift(close) - 1, by = .(id)]
+radf_data[, returns_week := close / shift(close, 8 * 5) - 1, by = .(id)]
+radf_data[, returns_month := close / shift(close, 8 * 22) - 1, by = .(id)]
+setorderv(radf_data, c("id", "datetime"))
+radf_data_ml <- na.omit(radf_data[, .(id, datetime, returns, returns_week, returns_month, adf, sadf, gsadf, badf, bsadf)])
+radf_data <- na.omit(radf_data[, .(id, datetime, returns, adf, sadf, gsadf, badf, bsadf)])
+```
+
+# ML model
+
+```{r}
+# parameters for ML model
+id_ = "1-100-1"
+var_ = colnames(radf_data)[4:ncol(radf_data)]
+timestep_length_ = c(10, 50)
+params = expand.grid(id_, var_, timestep_length_, stringsAsFactors = FALSE)
+colnames(params) <- c("id", "var", "timestep")
+```
+
+
+```{r}
+# create dataset for every param set
+X <- lapply(1:nrow(params), function(i) {
+  # transform time series data from 2d to 3d
+  sample_ <- radf_data_ml[id == id_]
+  sample_ <- sample_[, sign := ifelse(returns_week > 0, 1, 0)]
+  cols <- c(as.character(params$var[i]), "sign")
+  X <- sample_[, ..cols]
+  
+  # generate 3d data dim (WRONG OUTPUT FOR Y)
+  data_gen <- flow_series_from_dataframe(
+    data = as.data.frame(X),
+    x = colnames(X)[1],
+    y = colnames(X)[2],
+    length_out = 1,
+    stride = 1,
+    lookback = 1,
+    timesteps = params$timestep[i],
+    batch_size = nrow(X),
+    mode = "training"
+  )
+  Xy <- data_gen()
+  x <- Xy[[1]]
+  x <- array(x, dim = c(dim(x)[1], 1, params$timestep[i]))
+  y <- as.matrix(X[(params$timestep[i] + 1):nrow(X), 2][[1]])
+  list(x, y)
+})
+
+```
+
+### SKTIME MODULE
+
+```{python}
+probas = []
+acc = []
+for i in range(len(r.X)):
+  print(i)
+  x_py = r.X[i][0]
+  x_py = from_3d_numpy_to_nested(x_py)
+  X_train, X_test, y_train, y_test = temporal_train_test_split(x_py, r.X[i][1])
+  classifier = TimeSeriesForestClassifier()
+  classifier.fit(X_train, y_train)
+  y_pred = classifier.predict(X_test)
+  y_pred_proba = classifier.predict_proba(X_test)
+  probas.append(y_pred_proba)
+  acc.append(accuracy_score(y_test, y_pred))
+```
+
+# SIMPLE VECTORIZED BACKTEST
+
+```{r}
+length(py$probas)
+```
+
+
+```{r}
+# accuracy of all models
+true <- as.vector(X[[1]][[2]])
+true <- true[(length(true) - nrow(py$probas[[1]]) + 1):length(true)]
+predictions <- lapply(py$probas, function(x) {y_pred_r <- ifelse(x[, 1] > 0.51, 0, 1)})
+accs <- lapply(predictions, function(x) {mlr3measures::acc(as.factor(true), as.factor(x))})
+accs <- as.data.table(accs)
+colnames(accs) <- as.character(params$Var2)
+predicitons_best <- predictions[[4]]
+
+# backtest
+returns <- radf_data[id == id_, .(datetime, returns)]
+returns <- as.xts.data.table(na.omit(returns))
+returns_test <- returns[(length(returns) - length(predicitons_best) + 1):nrow(returns)]
+returns_strategy <- returns[(length(returns) - length(predicitons_best) + 1):nrow(returns)] * as.integer(predicitons_best)
+charts.PerformanceSummary(cbind(returns[(nrow(returns) - length(predicitons_best) + 1):nrow(returns)],
+                                returns_strategy))
+
+```
+

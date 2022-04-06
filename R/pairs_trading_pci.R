@@ -1,47 +1,97 @@
 library(data.table)
 library(xts)
-  library(partialCI)
+library(partialCI)
 library(ggplot2)
-library(BatchGetSymbols)
-library(future.apply)
+library(AzureStor)
+library(pins)
+library(checkmate)
+library(RcppQuantuccia)
 
 
+
+# SET UP ------------------------------------------------------------------
+# checks
+assert_choice("BLOB-ENDPOINT", names(Sys.getenv()))
+assert_choice("BLOB-KEY", names(Sys.getenv()))
+assert_choice("APIKEY-FMPCLOUD", names(Sys.getenv()))
+
+# global vars
+ENDPOINT = storage_endpoint(Sys.getenv("BLOB-ENDPOINT"), key=Sys.getenv("BLOB-KEY"))
+CONT = storage_container(ENDPOINT, "fmpcloud")
+CONTINVESTINGCOM = storage_container(ENDPOINT, "investingcom")
+CACHEDIR = "D:/findata"
+setCalendar("UnitedStates::NYSE")
+
+
+
+# IMPORT MARKET DATA ------------------------------------------------------
 # get daily market data for sp500 stocks
-sp500_stocks <- GetSP500Stocks()
-plan(multicore(workers = 8L))
-sp500 <- BatchGetSymbols(sp500_stocks$Tickers,
-                         first.date = as.Date("2015-01-01"),
-                         last.date = as.Date("2018-01-01"),
-                         do.parallel = TRUE)
-prices <- as.data.table(sp500$df.tickers)
-head(prices)
+board <- board_azure(
+  container = storage_container(ENDPOINT, "fmpcloud-daily"),
+  path = "",
+  n_processes = 6L,
+  versioned = FALSE,
+  cache = CACHEDIR
+)
+files_ <- pin_list(board)
+files_ <- files_[as.Date(files_) > as.Date("2010-01-01")]
+files_ <- lapply(file.path(CACHEDIR, files_), list.files, recursive = TRUE, pattern = "\\.csv", full.names = TRUE)
+files_ <- unlist(files_)
+prices_dt <- lapply(files_, fread)
+prices_dt <- prices_dt[vapply(prices_dt, function(x) nrow(x) > 0, FUN.VALUE = logical(1))]
+prices_dt <- rbindlist(prices_dt)
 
-# clean daily market data
-setorderv(prices, c("ticker", "ref.date")) # order
-prices[, returns := price.adjusted / data.table::shift(price.adjusted) - 1, by = ticker] # calculate returns
-prices <- prices[, .(ticker, ref.date, price.adjusted)] # choose columns wee need
-prices <- prices[!duplicated(prices[, .(ticker, ref.date)])] # remove duplicates
-prices <- data.table::dcast(prices, ref.date ~ ticker, value.var = "price.adjusted") # long to wide reshape
-prices <- as.xts.data.table(prices) # convert to xts
+
+# CLEAN MARKET DATA -------------------------------------------------------
+# cleaning steps with explanations
+prices_dt <- prices_dt[isBusinessDay(date)] # keep only trading days
+prices_dt <- prices_dt[open > 0 & high > 0 & low > 0 & close > 0 & adjClose > 0] # remove rows with prices <= 0
+prices_dt <- prices_dt[, .(symbol, date, adjClose )] # keep only columns we need
+prices_dt <- unique(prices_dt, by = c("symbol", "date")) # remove duplicates
+prices_dt <- na.omit(prices_dt) # remove missing values
+setorder(prices_dt, "symbol", "date") # order for returns calculation
+prices_dt[, returns := adjClose / data.table::shift(adjClose, 1, type = "lag") - 1, by = symbol]
+prices_dt <- prices_dt[returns < 1] # TODO:: better outlier detection mechanism
+
+
+
+# PREPARE DATA ------------------------------------------------------------
+# take sample of all prices for test
+symbols <- unique(prices_dt$symbol)
+sample_symbols <- sample(symbols, 150)
+prices <- prices_dt[symbol %in% sample_symbols]
+prices <- data.table::dcast(prices, date ~ symbol, value.var = "adjClose") # long to wide reshape
+
+# remove columns woth lots of NA values
+keep_cols <- names(which(colMeans(!is.na(prices)) > 0.8))
+prices <- prices[, .SD, .SDcols = keep_cols]
+X <- as.xts.data.table(prices) # convert to xts
+X <- X[, colSums(!is.na(X)) == max(colSums(!is.na(X)))]
+X <- log(X)
+dim(X)
 
 # split in train and test set
-train <- prices["2015-01-01/2017-01-01"]
-test <- prices["2017-01-01/2018-01-01"]
+train <- X["2015-01-01/2017-01-01"]
+test <- X["2017-01-01/2018-01-01"]
 
-# keep only stocks with no missing values
-X <- train[, colSums(!is.na(train)) == max(colSums(!is.na(train)))]
-X_test <- test[, colSums(!is.na(test)) == max(colSums(!is.na(test)))]
-
-# choose best pairs using hedge.pci fucntoin and maxfact = 1 (only one facotr possible)
+# choose best pairs using hedge.pci function and maxfact = 1 (only one factor possible)
 # THIS TAKES FEW MINUTES
 pci_tests_i <- list()
 for (i in 1:ncol(X)) {
 
+  # DEBUG
+  print(i)
+
   # quasi multivariate pairs
-  hedge <- hedge.pci(X[, i], X[, -i], maxfact = 1)
+  hedge <- tryCatch(hedge.pci(train[, i], train[, -i], maxfact = 1, use.multicore = FALSE),
+                    error = function(e) NULL)
+  if (is.null(hedge)) {
+    pci_tests_i[[i]] <- NULL
+    next()
+    }
 
   # pci fit
-  test_pci <- test.pci(X[, i], hedge$pci$basis)
+  test_pci <- test.pci(train[, i], hedge$pci$basis)
 
   # summary table
   results <- data.table(series1 = hedge$pci$target_name, series2 = hedge$index_names)
@@ -53,7 +103,7 @@ for (i in 1:ncol(X)) {
                                   "M0_se", "R0_se")
   metrics <- as.data.table(as.list(metrics))
   results <- cbind(results, metrics)
-  pci_tests_i[[i]] <- cbind(results, as.data.table(as.list(test_pci$p.value)))
+  pci_tests_i[[i]] <- cbind(results, p_rw = test_pci$p.value[1], p_ar = test_pci$p.value[2])
 }
 pci_tests <- rbindlist(pci_tests_i, fill = TRUE)
 
@@ -64,24 +114,44 @@ pci_tests <- rbindlist(pci_tests_i, fill = TRUE)
 # 3) my condition: MR p value should be lower than 0.05 because this test confirms mean reverting component
 # 4) restriction to same sector I WANT APPLY THIS FOR  NOW
 # 5) 25% lowest  by neLog
-pci_tests_eligible <- pci_tests[pvmr > 0.5 & rho > 0.5 & MR < 0.05 &
-                                  negloglik <= quantile(pci_tests$negloglik, probs = 0.25)] # 1), 2), 3) and 4)
+pci_tests_eligible <- pci_tests[pvmr > 0.5  & rho > 0.5 &
+                                  negloglik <= quantile(pci_tests$negloglik, probs = 0.25)] # 1), 2), 3), 5)
+# pci_tests_eligible <- pci_tests[pvmr > 0.5 & rho > 0.5 & MR < 0.05 &
+#                                   negloglik <= quantile(pci_tests$negloglik, probs = 0.25)] # 1), 2), 3) and 5)
 
 # example of partially cointegrated pairs
-plot(X[, unlist(pci_pairs[1, 1:2])]) # prices series of first pair
-plot(log(X[, unlist(pci_pairs[1, 1:2])]))  # log prices series of first pair
-plot(log(X_test[, unlist(pci_pairs[1, 1:2])])) # prices series of first pair on test time
+plot(train[, unlist(pci_tests_eligible[1, 1:2])]) # prices series of first pair
+plot(log(train[, unlist(pci_tests_eligible[1, 1:2])]))  # log prices series of first pair
+plot(log(test[, unlist(pci_tests_eligible[1, 1:2])])) # prices series of first pair on test time
 
 
 # EXAMPLE FOR ONE PAIR ----------------------------------------------------
 
 # get spreads
-series1 <- X[, unlist(pci_pairs[1, 1])]
-series2 <- X[, unlist(pci_pairs[1, 2])]
+series1 <- train[, unlist(pci_tests_eligible[1, 1])]
+series2 <- train[, unlist(pci_tests_eligible[1, 2])]
 fit_pci <- fit.pci(series1, series2)
 gamma <- fit_pci$beta # people call it gamma often
 hidden_states <- statehistory.pci(fit_pci)
 spread <- xts(hidden_states[, 4], as.Date(rownames(hidden_states)))
+plot(spread)
+
+
+
+
+# spread portfolio
+gamma <- fit_pci$beta # people call it gamma often
+w_spread <- matrix(c(1, -gamma)/(1+gamma), nrow(series1), 2, byrow = TRUE)
+w_spread <- xts(w_spread, index(train))
+colnames(w_spread) <- c("w1", "w2")
+
+# spread
+spread <- rowSums(series1 * w_spread)
+spread <- xts(spread, index(Y))
+colnames(spread) <- paste0(colnames(Y)[1], "-", colnames(Y)[2])
+
+
+
 
 # calculate Z score from the spread
 spread_var <- as.numeric(var(spread))

@@ -5,7 +5,13 @@ library(ggplot2)
 library(BatchGetSymbols)
 library(future.apply)
 library(TTR)
-
+library(runner)
+library(reticulate)
+reticulate::use_condaenv("C:\\ProgramData\\Anaconda3\\python.exe")
+sktime <- reticulate::import("sktime")
+sklearn <- reticulate::import("sklearn")
+pd <- import("pandas")
+main <- import_main()
 
 # get daily market data for sp500 stocks
 sp500_stocks <- GetSP500Stocks()
@@ -103,3 +109,81 @@ PerformanceAnalytics::charts.PerformanceSummary(cbind(returns["2007-06-01/2010-0
 PerformanceAnalytics::charts.PerformanceSummary(cbind(returns["2015-01-01/2016-01-01"], returns_strategy["2015-01-01/2016-01-01"]))
 PerformanceAnalytics::charts.PerformanceSummary(cbind(returns["2020-01-01/2021-01-01"], returns_strategy["2020-01-01/2021-01-01"]))
 PerformanceAnalytics::charts.PerformanceSummary(cbind(returns["2021-01-01/2021-07-01"], returns_strategy["2021-01-01/2021-07-01"]))
+
+
+
+# ML MODEL ----------------------------------------------------------------
+
+# create X
+X <- cbind(as.data.table(prices[, "SPY"]), as.data.table(spread_difflast))
+X[, returns := SPY / shift(SPY) - 1]
+X[, returns_week := SPY / shift(SPY, 5) - 1]
+X[, returns_month := SPY / shift(SPY, 22) - 1]
+X <- X[, .(spread_difflast, returns_month)]
+X <- na.omit(X)
+X[, sign := ifelse(X[, 2] > 0, "1", "0")]
+X <- X[, .(spread_difflast, sign)]
+table(X$sign)
+
+library(kerasgenerator)
+# generate 3d data dim (WRONG OUTPUT FOR Y)
+timestep_len = 50
+data_gen <- flow_series_from_dataframe(
+  data = as.data.frame(X),
+  x = "spread_difflast",
+  y = "sign",
+  length_out = 1,
+  stride = 1,
+  lookback = 1,
+  timesteps = timestep_len,
+  batch_size = nrow(X),
+  mode = "training"
+)
+Xy <- data_gen()
+x <- Xy[[1]]
+dim(x)
+x <- array(x, dim = c(dim(x)[1], 1, timestep_len))
+x <- sktime$utils$data_container$from_3d_numpy_to_nested(x)
+y <- as.matrix(X[(timestep_len+1):nrow(X), 2])
+
+test = sktime$forecasting$model_selection$temporal_train_test_split(x, y)
+classifier = sktime$classification$interval_based$TimeSeriesForest()
+classifier$fit(test[[1]], test[[3]])
+y_pred_prob = classifier$predict_proba(test[[2]])
+y_pred = ifelse(y_pred_prob[, 1] > 0.60, "0", "1")
+sklearn$metrics$accuracy_score(test[[4]], y_pred)
+
+head(classifier$predict(test[[2]]))
+head(y_pred)
+
+# backtest
+returns <- diff(log(prices$SPY))
+returns_strategy <- returns[(nrow(returns) - length(y_pred) + 1):nrow(returns)] * as.integer(y_pred)
+PerformanceAnalytics::charts.PerformanceSummary(cbind(returns[(nrow(returns) - length(y_pred) + 1):nrow(returns)],
+                                                      returns_strategy))
+
+
+# library(tsclassification)
+#
+# data = data.frame(matrix(rnorm(500), nrow = 100))
+# data$target = sample(c(1, 0), 100, replace = TRUE)
+# train_set = sample(c(TRUE, FALSE), 100, replace = TRUE)
+#
+#
+# # Instantiate the model
+# tsc = TSClassifier$new("timeseriesweka.classifiers.BOSS")
+# # Call train and predict function on the different data splits
+# tsc$train(data[train_set, ],target = "target")
+# tsc$predict(data[!train_set, ])
+
+
+# library(tsclassification)
+# library(mlr3)
+# tsk = mlr_tasks$get("iris")
+# lrn = LearnerClassifTSClassification$new()
+#
+# # Train the classifier
+# lrn$train(tsk)
+#
+# # Predict
+# prds = lrn$predict(tsk)

@@ -18,15 +18,14 @@ library(TTR)
 library(naniar)
 library(future.apply)
 library(Rcatch22)
+library(equityData)
 
 
 
-# set fmpcloudr api token
-API_KEY = "15cd5d0adf4bc6805a724b4417bbaafc"
-fmpc_set_token(API_KEY)
+# SET UP ------------------------------------------------------------------
 
-# performance
-plan(multicore(workers = 8))
+# globals
+save_path_mlr3models <- "D:/mlfin/mlr3_models/"
 
 
 
@@ -46,17 +45,13 @@ sp500 <- rbindlist(httr::content(GET(url)))
 sp500_symbols <- unique(c(sp500$removedTicker, sp500$symbol))
 
 # get earnings estimates and actual earnings
-earnings <- fread("D:/fundamental_data/earnings_announcement/ea-2021-06-09.csv")
-earnings[, date := as.Date(date)]
-earnings <- earnings[date < Sys.Date()]     # remove announcements for today
-earnings <- na.omit(earnings, cols = c("eps", "epsEstimated")) # remove rows with NA for earnings
-earnings[revenue == 0 | revenueEstimated == 0] # number of missing revenues data
+events <- get_blob_file("earnings-calendar.rds", "fundamentals")
+events <- events[date < Sys.Date()] # remove announcements for today (not important if don't use )
+events <- na.omit(events, cols = c("eps", "epsEstimated")) # remove rows with NA for earnings
+events[revenue == 0 | revenueEstimated == 0] # number of missing revenues data (be aware)
 
 # get earnings calls transcripts (conference calls)
-transcript_files <- list.files("D:/fundamental_data/transcripts", full.names = TRUE)
-files_sizes <- base::file.info(transcript_files, extra_cols = FALSE)["size"]
-transcript_files <- transcript_files[files_sizes > 0]     # keep only files with data
-transcripts <- lapply(transcript_files, fread)
+transcripts <- equityData::get_all_blob_files_content("transcripts") # takes some time!
 transcripts <- transcripts[lengths(transcripts) == 5]     # keep only elements with 5 columns
 wrong_class <- unlist(lapply(transcripts, function(x) {class(x$quarter) == "character"}))
 transcripts <- transcripts[!wrong_class]                  # remove elements with quarter element as characetr type
@@ -88,7 +83,7 @@ prices <- fread("D:/fundamental_data/daily_data/daily_prices.csv")
 prices[, returns := adjClose / data.table::shift(adjClose) - 1, by = symbol]
 sum(is.na(prices$adjClose))
 prices_n <- prices[, .N, by = symbol]
-prices_n <- prices_n[which(prices_n$N > 30)]  # remove prices with only 30 observations
+prices_n <- prices_n[which(prices_n$N > 60)]  # remove prices with only 30 observations
 prices <- prices[symbol %in% prices_n$symbol]
 
 
@@ -154,7 +149,6 @@ A[, `:=`(
   rev_diff = (revenue - revenueEstimated) / adjClose
 )]
 setorderv(A, c("symbol", "date"))
-str(A)
 
 # fundamental data
 reports <- fread("D:/fundamental_data/pl.csv")
@@ -254,11 +248,11 @@ clf_data[, (features) := lapply(.SD, Winsorize, probs = c(0.05, 0.95)), .SDcols 
 skimr::skim(clf_data)
 
 # define task
-task = TaskClassif$new(id = 'mlfin_earnings', backend = clf_data[, .SD, .SDcols = !c("bin01", "binextreme")], target = 'bin')
-task_01 = TaskClassif$new(id = 'mlfin_earnings', backend = clf_data[, .SD, .SDcols = !c("bin", "binextreme")], target = 'bin01')
+task = TaskClassif$new(id = 'fml_3p', backend = clf_data[, .SD, .SDcols = !c("bin01", "binextreme")], target = 'bin')
+task_01 = TaskClassif$new(id = 'fml_all01', backend = clf_data[, .SD, .SDcols = !c("bin", "binextreme")], target = 'bin01')
 task_extreme <- clf_data[binextreme != 0, .SD, .SDcols = !c("bin", "bin01")]
 task_extreme$binextreme <- droplevels(task_extreme$binextreme)
-task_extreme = TaskClassif$new(id = 'mlfin_earnings', backend = task_extreme, target = 'binextreme')
+task_extreme = TaskClassif$new(id = 'fml_01ext', backend = task_extreme, target = 'binextreme')
 print(task$nrow)
 print(task_01$nrow)
 print(task_extreme$nrow)
@@ -269,6 +263,18 @@ resampling = rsmp('holdout', ratio = 0.7)
 measure = msr("classif.acc")
 terminator = trm('evals', n_evals = 30)
 tuner = tnr("grid_search", resolution = 1)
+
+
+
+############################## SKIP ##############################
+# ML PIPELIE (TEST VERSION!) ----------------------------------------------
+
+sonar_task = tsk("sonar")
+sonar_task$col_roles$stratum = sonar_task$target_names #stratification
+
+
+
+############################## SKIP ##############################
 
 
 # FEATURES IMPORTANCE -----------------------------------------------------
@@ -318,7 +324,7 @@ bmr_fs = benchmark(design, store_models = TRUE)
 file_path <- "C:/Users/Mislav/Documents/GitHub/alphar/mlmodels"
 file_name <- paste0("feature-importance-earnings-", format.POSIXct(Sys.time(), "%Y-%m-%d%H-%M-%S"), ".rds")
 saveRDS(bmr_fs, file = file.path(file_path, file_name))
-bmr_fs <- readRDS("C:/Users/Mislav/Documents/GitHub/alphar/mlmodels/feature-importance-earnings-2021-07-0608-56-15.rds")
+bmr_fs <- readRDS("C:/Users/Mislav/Documents/GitHub/alphar/mlmodels/feature-importance-earnings-2021-07-0718-26-30.rds")
 
 # extract 10 most important features
 bmr_fs$aggregate(c(msrs("classif.acc"), msrs("classif.ce")))
@@ -331,7 +337,7 @@ most_important_features <- fintersect(filtered_features_praznik[1:20, 1], import
 
 # choose only most important features in the task
 # task$select(most_important_features[[1]])
-task$select(important_features[1:20][[1]])
+task_extreme$select(important_features[1:20][[1]])
 
 
 
@@ -465,30 +471,16 @@ sum(x$`pred$data$truth` == 1) / nrow(x)
 # model psecific graphs
 # plot(best_submodel$learner$model)
 
-# save best model
-file_name <- paste0('mlmodels/', gsub('\\.', '_', choose_model), '_', best_submodel$hash, '.rds')
-saveRDS(best_submodel, file = file_name)
-
 # save benchmark
-file_name <- paste0('mlmodels/bmr_results', '-', format.POSIXct(Sys.time(), "%Y%m%d-%H%M%S"), '.rds')
+bmr_results$tasks$task_id
+file_name <- paste0(save_path_mlr3models,
+                    bmr_results$tasks$task_id, "-",
+                    format.POSIXct(Sys.time(), "%Y%m%d-%H%M%S"), '.rds')
 saveRDS(bmr_results, file = file_name)
 
 
 
 # TODO --------------------------------------------------------------------
-
-
-###### REMOVE FOR NOW, DATA SEEMS WRONG
-# # earnings estimates
-# qearnings <- fmpc_analyst_outlook(tickers, 'estimateQtr', limit = 1000)
-# qearnings <- as.data.table(qearnings)
-# qearnings[, date := as.Date(date)]
-# qearnings[, quarter := data.table::quarter(date)]
-# qearnings[, year := data.table::year(date)]
-# qearnings[, date := NULL]
-# DT <- merge(DT, qearnings, by = c("symbol", "quarter", "year"), all.x = TRUE, all.y = FALSE)
-###### REMOVE FOR NOW, DATA SEEMS WRONG
-
 
 # CHECK LATER
 fmpc_analyst_outlook(tickers, 'grade', limit = 1000)

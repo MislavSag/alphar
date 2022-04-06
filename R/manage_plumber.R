@@ -22,8 +22,8 @@ account$account$status == 'active'
 
 # doplets
 drops <- analogsea::droplets()
-droplet_id <- drops$`ubuntu-s-2vcpu-4gb-fra1-01-1617289843492-s-2vcpu-4gb-fra1-01`$id
-ip <- drops$`ubuntu-s-2vcpu-4gb-fra1-01-1617289843492-s-2vcpu-4gb-fra1-01`$networks$v4[[2]]$ip_address
+droplet_id <- drops$`ubuntu-s-2vcpu-4gb-fra1-01-1617289843492-s-2vcpu-4gb-fra1-01`$id # ???
+ip <- drops$`ubuntu-s-2vcpu-4gb-fra1-01-1617289843492-s-2vcpu-4gb-fra1-01`$networks$v4[[1]]$ip_address
 print(drops)
 
 # install R
@@ -47,8 +47,13 @@ analogsea::install_r_package(droplet_id, "mlr3verse")
 analogsea::install_r_package(droplet_id, "ranger")
 analogsea::install_r_package(droplet_id, "rvest")
 analogsea::install_r_package(droplet_id, "quarks")
+analogsea::install_r_package(droplet_id, "utils")
+analogsea::install_r_package(droplet_id, "utils")
 analogsea::install_github_r_package(droplet_id, "https://github.com/ottosven/backCUSUM")
 analogsea::install_github_r_package(droplet_id, "https://github.com/MislavSag/mrisk")
+analogsea::install_github_r_package(droplet_id, "https://github.com/hendersontrent/Rcatch22")
+analogsea::install_github_r_package(droplet_id, "https://github.com/mlr-org/mlr3extralearners")
+analogsea::install_github_r_package(droplet_id, "https://github.com/a-hanf/mlr3automl")
 
 # upload files
 droplet_ssh(droplet_id, "pwd")
@@ -56,6 +61,12 @@ droplet_upload(
   droplet = droplet_id,
   local = 'C:/Users/Mislav/Documents/GitHub/alphar/mlmodels/classif_ranger_tuned_66097a6ccf34ed25.rds',
   remote = '/var/plumber/ml_model_risks.rds',# '/root/var/plumber/alphar/ml_model_risks.rds',
+  verbose = TRUE
+)
+droplet_upload(
+  droplet = droplet_id,
+  local = "C:/Users/Mislav/Documents/GitHub/alphar/R/plumber_deploy/ml_model_hft.rds",
+  remote = '/var/plumber/ml_model_hft.rds',# '/root/var/plumber/alphar/ml_model_risks.rds',
   verbose = TRUE
 )
 
@@ -84,7 +95,6 @@ y <- market_data$close
 x <- market_data$datetime
 
 # test exuber
-# 207.154.227.4
 req_body <- list(x = y[1:600], adf_lag=2)
 req_body <- jsonlite::toJSON(req_body, dataframe = 'rows')
 response <- httr::POST(paste0("http://", ip, "/alphar/radf"),
@@ -108,7 +118,7 @@ httr::content(response, simplifyVector=TRUE)
 # test backcusum
 req_body <- list(x = y[1:100], width = 2)
 req_body <- jsonlite::toJSON(req_body, dataframe = 'rows')
-response <- httr::POST(paste0("http://", '206.81.24.140', "/alphar/backcusum"),
+response <- httr::POST(paste0("http://", ip, "/alphar/backcusum"),
                        body=req_body, encode="json")
 httr::content(response, simplifyVector=TRUE)
 
@@ -158,11 +168,26 @@ content(p, as = 'text')
 rbindlist(content(p))
 
 # quarks
-url <- paste0("http://", ip, "/alphar/quarks")
+url <- paste0("http://", ip, "/alphar/quark")
 req_body <- list(x = y, p = 0.975, model = "EWMA", method = "plain", nwin = 100, nout = 150)
 req_body <- jsonlite::toJSON(req_body, dataframe = 'rows')
-response <- httr::POST(paste0("http://", ip, "/alphar/quark"), body=req_body, encode="json")
+response <- httr::POST(url, body=req_body, encode="json")
 httr::content(response, simplifyVector=TRUE)
+
+# mlr3 hft model
+url <- paste0("http://", ip, "/alphar/ml_model_hft")
+req_body <- list(close = y[1:601])
+req_body <- jsonlite::toJSON(req_body, dataframe = 'rows')
+response <- httr::POST(url, body=req_body, encode="json", verbose())
+httr::content(response, simplifyVector=TRUE)
+
+# backcusum filter
+url <- paste0("http://", ip, "/alphar/backcusumfilter")
+req_body <- list(returns = y[1:100])
+req_body <- jsonlite::toJSON(req_body, dataframe = 'rows')
+response <- httr::POST(url, body=req_body, encode="json", verbose())
+httr::content(response, simplifyVector=TRUE)
+
 
 
 # TEST ML MODELS ----------------------------------------------------------
