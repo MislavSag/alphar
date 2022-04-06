@@ -57,16 +57,18 @@ prices[, close := adjClose]
 prices <- na.omit(prices[, .(symbol, date, open, high, low, close, volume, returns)])
 prices <- unique(prices, by = c("symbol", "date")) # remove duplicates if they exists
 
+# TODO: simfin+daily data
+
 # download only USA stocks
 url <- modify_url("https://financialmodelingprep.com/", path = "api/v3/available-traded/list",
                   query = list(apikey = Sys.getenv("APIKEY-FMPCLOUD") ))
 stocks <- rbindlist(content(GET(url)))
-filter_symbols <- stocks[exchange %in% c("AMEX",
-                                         "New York Stock Exchange Arca", "New York Stock Exchange",
-                                         "NYSE American", "NYSEArca",
-                                         "NasdaqGS", "NASDAQ", "Nasdaq", "NASDAQ Global Market",
-                                         "Nasdaq Capital Market", "Nasdaq Global Market", "Nasdaq Global Select"
-                                         )]
+# filter_symbols <- stocks[exchange %in% c("AMEX",
+#                                          "New York Stock Exchange Arca", "New York Stock Exchange",
+#                                          "NYSE American", "NYSEArca",
+#                                          "NasdaqGS", "NASDAQ", "Nasdaq", "NASDAQ Global Market",
+#                                          "Nasdaq Capital Market", "Nasdaq Global Market", "Nasdaq Global Select"
+#                                          )]
 usa_symbols <- stocks[exchangeShortName %in% c("AMEX", "NASDAQ", "NYSE", "OTC")]
 
 # remove ETF's
@@ -111,7 +113,7 @@ setorderv(fundamentals, c("symbol", "fillingDate"))
 
 
 
-# UNIVERSE SELECTION ------------------------------------------------------
+# COARSE UNIVERSE SELECTION ------------------------------------------------------
 # number of symbols by year-month
 symbols_by_year_month <- prices_usa[, .(n_symbols = length(unique(symbol))), by = .(year, month)]
 symbols_by_year_month[, date := as.Date(paste(year, month, "01", sep = "-"), format = "%Y-%m-%d")]
@@ -145,7 +147,7 @@ prices_most_liquid_least_vol[year == 2022 & month == 2, unique(symbol)]
 
 
 
-# FUNDAMENTALS -------------------------------------------------------------
+# FINE FUNDAMENTAL FILTERING  -------------------------------------------------------------
 # choose fundamnetal features
 features_fund <- fundamentals[, .(symbol, date, fillingDate, fiveYRevenueGrowthPerShare,
                                   fiveYDividendperShareGrowthPerShare, payoutRatio.x,
@@ -166,14 +168,14 @@ DT[fillingDate == as.Date("2021-09-30")]
 DT <- na.omit(DT, cols = c("fiveYRevenueGrowthPerShare", "fiveYDividendperShareGrowthPerShare", "freeCashFlowYield_5y_mean"))
 DT[fillingDate == as.Date("2021-09-30")]
 
-# remove stocks with fundamnetals below thresholds
+# 1) remove stocks with fundamnetals below thresholds
 DT_sample <- DT[fiveYRevenueGrowthPerShare >= 0.05]
 DT_sample <- DT_sample[fiveYDividendperShareGrowthPerShare >= 0.01]
 DT_sample <- DT_sample[payoutratio_5y_mean <= 0.7]
 DT_sample <- DT_sample[returnOnCapitalEmployed_5y_mean >= 0.025]
 DT_sample <- DT_sample[freeCashFlowYield_5y_mean >= 0.01]
 
-# cluster analysis
+# 2) cluster analysis
 data_ <- DT[fillingDate == as.Date("2021-12-31"), .(symbol, fillingDate, fiveYRevenueGrowthPerShare,
                                                     fiveYDividendperShareGrowthPerShare, freeCashFlowYield_5y_mean)]
 cols <- colnames(data_)[3:ncol(data_)]
@@ -213,21 +215,11 @@ nrow(data_) == length(preds$partition)
 data_$symbol[which(preds$partition == 1)]
 data_$symbol[which(preds$partition == 2)]
 data_$symbol[which(preds$partition == 3)]
-#
-#
-# # test
-# fundamentals[symbol == "AAPL" & calendarYear == 2021,
-#              .(calendarYear, period, revenue, costOfRevenue, grossProfit, researchAndDevelopmentExpenses,
-#                benef, operatingIncome)]
-# fundamentals$tax
-
-
-
 
 
 # QC BACKTEST -------------------------------------------------------------
-#
-qc_data <- DT[, .(fillingDate, symbol)]
+# save universe on blob azure
+qc_data <- DT_sample[, .(fillingDate, symbol)]
 setorder(qc_data, fillingDate)
 setnames(qc_data, "fillingDate", "date")
 qc_data[, date := format.Date(date, format = "%Y%m%d")]
