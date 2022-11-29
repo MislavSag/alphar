@@ -1,3 +1,4 @@
+
 # Select ETF symbols for asset allocation
 symbolv <- c("VTI", "VEU", "EEM", "XLY", "XLP", "XLE", "XLF",
              "XLV", "XLI", "XLB", "XLK", "XLU", "VYM", "IVW", "IWB", "IWD",
