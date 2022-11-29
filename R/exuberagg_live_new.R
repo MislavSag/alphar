@@ -13,7 +13,6 @@ library(xts)
 library(runner)
 library(TTR)
 library(data.table)
-library(rdrop2)
 library(ggplot2)
 library(AzureStor)
 
@@ -82,6 +81,10 @@ market_data <- market_data[market_data[, .N, by = .(symbol)][N > 600], on = "sym
 keep_symbols <- market_data[, .N, by = symbol][N > exuber_length, symbol]
 market_data <- market_data[symbol %in% keep_symbols]
 market_data <- market_data[, tail(.SD, exuber_length), by = .(symbol)]
+### ONLY NEW ###
+market_data[, old_data := max(datetime) < as.Date(Sys.Date() - 10), by = "symbol"]
+market_data <- market_data[, .SD[all(!old_data)], by = "symbol"]
+### ONLY NEW ###
 symbols <- unique(market_data$symbol)
 close_data <- market_data[, .(symbol, datetime, close)]
 
@@ -93,7 +96,7 @@ exuber_history[V1 == as.POSIXct("2022-03-01 13:00:00"), V7 := 3.1]
 ggplot(exuber_history[V1 %between% c("2021-01-01", as.character(Sys.Date()))], aes(x = V1, y = SMA(V7, 8))) +
   geom_line() +
   geom_hline(yintercept = 2.9, color = "red")
-ggplot(exuber_history[V1 %between% c(Sys.Date() - 5, as.character(Sys.Date()))], aes(x = V1, y = SMA(V7, 8))) +
+ggplot(exuber_history[V1 %between% c(Sys.Date() - 7, as.character(Sys.Date()))], aes(x = V1, y = SMA(V7, 8))) +
   geom_line() +
   geom_hline(yintercept = 2.9, color = "red")
 
@@ -219,7 +222,7 @@ repeat {
     std_exuber <- tail(std_exuber, 1)
     cols <- colnames(std_exuber)
 
-    # merghe old and new data
+    # merge old and new data
     std_exuber <- rbind(exuber_history, std_exuber, use.names = FALSE)
     colnames(std_exuber) <- cols
     std_exuber <- unique(std_exuber)
@@ -245,8 +248,13 @@ repeat {
       fwrite(std_exuber, file_name)
       fwrite(std_exuber, file_name_date)
 
-      # upload file to dropbox if it doesnt'exists
-      drop_upload(file = file_name, path = "exuber")
+
+      # add to blob
+      cont <- storage_container(ENDPOINT, "qc-live")
+      storage_write_csv(tail(std_exuber, 1), cont, file = "exuber.csv", col_names = FALSE)
+
+      # # upload file to dropbox if it doesnt'exists
+      # drop_upload(file = file_name, path = "exuber")
 
     } else {
 
@@ -254,13 +262,17 @@ repeat {
       fwrite(tail(std_exuber, 1), file_name, col.names = FALSE)
 
       # update dropbox
-      drop_upload(file = file_name, path = "exuber")
+      # drop_upload(file = file_name, path = "exuber")
+
+      # add to blob
+      cont <- storage_container(ENDPOINT, "qc-live")
+      storage_write_csv(tail(std_exuber, 1), cont, file = "exuber.csv", col_names = FALSE)
     }
   }
   if (s > closing_time) {
     print("Market is closed")
     break
   }
-  Sys.sleep(5L)
+  Sys.sleep(1L)
   next_time_point <- ceiling_date(s, frequency_in_minutes)
 }

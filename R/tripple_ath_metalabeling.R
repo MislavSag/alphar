@@ -33,6 +33,9 @@ check_dates <- function(x) {
 }
 
 
+# IMPORT DATA -------------------------------------------------------------
+# import universe
+sp100 <- fread("D:/universum/sp-100-index-03-11-2022.csv")
 
 # import data
 azure_blobs <- list_blobs(CONT)

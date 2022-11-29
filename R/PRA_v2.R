@@ -1,55 +1,47 @@
 library(data.table)
 library(httr)
-library(leanr)
 library(QuantTools)
 library(ggplot2)
 library(TTR)
 library(PerformanceAnalytics)
-library(equityData)
-library(AzureStor)
-library(future.apply)
 library(patchwork)
-library(vars)
-library(gausscov)
 library(runner)
+library(tiledb)
+library(lubridate)
+library(rvest)
+library(AzureStor)
 
 
-# set up
-ENDPOINT = storage_endpoint(Sys.getenv("BLOB-ENDPOINT"), key=Sys.getenv("BLOB-KEY"))
-CONT = storage_container(ENDPOINT, "equity-usa-hour-fmpcloud-adjusted")
 
 # PARAMETERS
-frequency = "hour"
 windows = c(8 * 5, 8 * 22, 8 * 22 * 3, 8 * 22 * 6,  8 * 22 * 12, 8 * 22 * 12 * 2)
 
 # import data
-azure_blobs <- list_blobs(CONT)
-s <- Sys.time()
-market_data_list <- lapply(azure_blobs$name, function(x) {
-  print(x)
-  y <- tryCatch(storage_read_csv2(CONT, x), error = function(e) NA)
-  if (is.null(y) | all(is.na(y))) return(NULL)
-  y <- cbind(symbol = x, y)
-  return(y)
-})
-e <- Sys.time()
-e - s
-market_data <- rbindlist(market_data_list)
-market_data[, symbol := toupper(gsub("\\.csv", "", symbol))]
-keep_symbols <- market_data[, .N, by = symbol][N > 600, symbol]
-market_data <- market_data[symbol %in% keep_symbols]
-market_data[, N := 0]
-setorderv(market_data, c('symbol', 'datetime'))
-market_data[, returns := close / shift(close) - 1, by = "symbol"]
-market_data <- na.omit(market_data)
-market_data$datetime <- as.POSIXct(as.numeric(market_data$datetime),
-                                   origin=as.POSIXct("1970-01-01", tz="EST"),
-                                   tz="EST")
-market_data <- market_data[format.POSIXct(datetime, format = "%H:%M:%S") %between% c("09:30:00", "16:00:00")]
-market_data <- unique(market_data, cols = c("symbol", "date"))
-spy <- market_data[symbol == "SPY", .(datetime, close, returns)]
-symbols <- unique(market_data$symbol)
-close_data <- market_data[, .(symbol, datetime, close)]
+arr <- tiledb_array("D:/equity-usa-hour-fmpcloud-adjusted")
+system.time(hour_data_raw <- arr[])
+tiledb_array_close(arr)
+hour_data_raw <- as.data.table(hour_data_raw)
+attr(hour_data_raw$time, "tz") <- Sys.getenv("TZ")
+hour_data_raw[, time := with_tz(time, "America/New_York")]
+
+# keep trading hours
+hour_data <- hour_data_raw[as.ITime(time) %between% c(as.ITime("10:00:00"), as.ITime("16:00:00"))]
+hour_data <- unique(hour_data, cols = c("symbol", "time"))
+
+# keep only symbols with at least N obsrvations
+keep_symbols <- hour_data[, .N, by = symbol][N > max(windows), symbol]
+hour_data <- hour_data[symbol %in% keep_symbols]
+hour_data[, N := 0]
+setorderv(hour_data, c('symbol', 'time'))
+
+# calcualte returns
+hour_data[, returns := close / shift(close) - 1, by = "symbol"]
+hour_data <- na.omit(hour_data)
+
+# extract SPY
+spy <- hour_data[symbol == "SPY", .(time, close, returns)]
+symbols <- unique(hour_data$symbol)
+close_data <- hour_data[, .(symbol, time, close)]
 
 # import indicators
 # indicators_old <- fread("D:/risks/pra/pra_indicators.csv")
@@ -62,22 +54,23 @@ close_data <- market_data[, .(symbol, datetime, close)]
 # calculate main variable
 # CALCUALTE OR
 cols <- paste0("pr_", windows)
-# close_data[, (cols) := lapply(windows, function(w) roll_percent_rank(close, w)), by = "symbol"]
+close_data[, (cols) := lapply(windows, function(w) roll_percent_rank(close, w)), by = "symbol"]
+
 # fwrite(close_data, "D:/risks/pra/pra_raw.csv", dateTimeAs = "write.csv")
 # IMPORT
-close_data <- fread("D:/risks/pra/pra_raw.csv")
-close_data$datetime <- as.POSIXct(as.numeric(close_data$datetime),
-                                  origin=as.POSIXct("1970-01-01", tz="EST"),
-                                  tz="EST")
+# close_data <- fread("D:/risks/pra/pra_raw.csv")
+# close_data$datetime <- as.POSIXct(as.numeric(close_data$datetime),
+#                                   origin=as.POSIXct("1970-01-01", tz="EST"),
+#                                   tz="EST")
 
 # sp100 stocks
-sp100 <- fread("D:/universum/sp-100-index-03-11-2022.csv")
-# close_data_100 <- close_data[symbol %in% sp100$Symbol]
-# spy_close_data <- market_data[symbol == "SPY"]
-# spy_close_data[, (cols) := lapply(windows, function(w) roll_percent_rank(close, w)), by = "symbol"]
-# cols_ <- c("symbol", "datetime", "close", cols)
-# spy_close_data <- spy_close_data[, ..cols_]
-# close_data_100 <- rbind(close_data_100, spy_close_data)
+sp100 <- GET("https://en.wikipedia.org/wiki/S%26P_100") |>
+  httr::content(x = _) |>
+  html_elements(x = _, "table") |>
+  (`[[`)(3) |>
+  html_table(x = _, fill = TRUE)
+symbols_100 = sp100$Symbol
+
 
 
 # DUMMY -------------------------------------------------------------------
@@ -118,9 +111,12 @@ indicators <- close_data[symbol != "SPY", lapply(.SD, sum, na.rm = TRUE),
                                      cols_above_999, cols_above_99, cols_below_001, cols_below_01,
                                      cols_above_97, cols_below_03, cols_above_95, cols_below_05,
                                      cols_net_1, cols_net_2, cols_net_3, cols_net_4),
-                         by = .(datetime)]
-indicators <- unique(indicators, by = c("datetime"))
-fwrite(indicators, "D:/risks/pra/pra_indicators.csv")
+                         by = .(time)]
+indicators <- unique(indicators, by = c("time"))
+file_name <- paste0("D:/risks/pra/pra_indicators",
+                    format(Sys.time(), format = "%Y%m%d%H%M%S"),
+                    ".csv")
+fwrite(indicators, file_name)
 
 # load indicators
 # indicators <- fread("D:/risks/pra/pra_indicators.csv")
@@ -128,22 +124,22 @@ fwrite(indicators, "D:/risks/pra/pra_indicators.csv")
 setorder(indicators, "datetime")
 
 # SP 100
-close_data_100 <- close_data[symbol %in% c(sp100$Symbol, "SPY")]
+close_data_100 <- close_data[symbol %in% c(symbols_100, "SPY")]
 indicators_100 <- close_data_100[symbol != "SPY", lapply(.SD, sum, na.rm = TRUE),
                                  .SDcols = c(colnames(close_data)[grep("pr_\\d+", colnames(close_data))],
                                              cols_above_999, cols_above_99, cols_below_001, cols_below_01,
                                              cols_above_97, cols_below_03, cols_above_95, cols_below_05,
                                              cols_net_1, cols_net_2, cols_net_3, cols_net_4),
-                                 by = .(datetime)]
-indicators_100 <- unique(indicators_100, by = c("datetime"))
+                                 by = .(time)]
+indicators_100 <- unique(indicators_100, by = c("time"))
 
 # merge indicators and spy
-backtest_data <- spy[indicators, on = 'datetime']
+backtest_data <- spy[indicators, on = 'time']
 backtest_data <- na.omit(backtest_data)
-setorder(backtest_data, "datetime")
-backtest_data_100 <- spy[indicators_100, on = 'datetime']
+setorder(backtest_data, "time")
+backtest_data_100 <- spy[indicators_100, on = 'time']
 backtest_data_100 <- na.omit(backtest_data_100)
-setorder(backtest_data_100, "datetime")
+setorder(backtest_data_100, "time")
 
 
 
@@ -173,13 +169,13 @@ NEW <- c("2022-01-01", "2022-03-15")
 
 # check individual stocks
 sample_ <- close_data[symbol == "AAPL"]
-v_buy <- sample_[pr_above_dummy_95_1056 == 1, datetime, ]
-v_sell <- sample_[pr_below_dummy_05_1056 == 1, datetime, ]
-ggplot(sample_, aes(x = datetime)) +
+v_buy <- sample_[pr_above_dummy_95_1056 == 1, time, ]
+v_sell <- sample_[pr_below_dummy_05_1056 == 1, time, ]
+ggplot(sample_, aes(x = time)) +
   geom_line(aes(y = close)) +
   geom_vline(xintercept = v_buy, color = "green") +
   geom_vline(xintercept = v_sell, color = "red")
-ggplot(sample_[datetime %between% GFC], aes(x = datetime)) +
+ggplot(sample_[time %between% GFC], aes(x = time)) +
   geom_line(aes(y = close)) +
   geom_vline(xintercept = v_buy, color = "green") +
   geom_vline(xintercept = v_sell, color = "red")
@@ -203,7 +199,7 @@ ggplot(sample_[datetime %between% NEW], aes(x = datetime)) +
 
 
 
-  # PREPARE BACKTEST --------------------------------------------------------
+# PREPARE BACKTEST --------------------------------------------------------
 # plots sum
 g1 <- ggplot(backtest_data, aes(x = datetime)) +
   geom_line(aes(y = pr_below_dummy_40))
@@ -453,6 +449,11 @@ Performance(xts(backtest_data$returns, order.by = backtest_data$datetime))
 
 
 
+
+# VECTORBT BACKTEST -------------------------------------------------------
+
+
+
 # INDIVIDUAL BACKTEST -----------------------------------------------------
 # prepare data for backtest
 sample_ <- close_data[symbol == "SPY"]
@@ -471,9 +472,9 @@ for (i in seq_along(signal_)) {
   if (i %in% 1:n_) {
     signals[i] <- NA
   } else if (any(signal_[(i-n_):(i-1)] == 1, na.rm = TRUE)) {
-  # } else if (any(signal_[(i-n_):(i-1)] == 1, na.rm = TRUE) &
-  #            (sum(signal_[(i-n_):(i-1)] == 1, na.rm = TRUE) > sum(signal_[(i-n_):(i-1)] == 0, na.rm = TRUE))) {
-  # } else if (sum(signal_[(i-15):(i-1)] == 0, na.rm = TRUE) > 2) {
+    # } else if (any(signal_[(i-n_):(i-1)] == 1, na.rm = TRUE) &
+    #            (sum(signal_[(i-n_):(i-1)] == 1, na.rm = TRUE) > sum(signal_[(i-n_):(i-1)] == 0, na.rm = TRUE))) {
+    # } else if (sum(signal_[(i-15):(i-1)] == 0, na.rm = TRUE) > 2) {
     signals[i] <- 1
   } else {
     signals[i] <- 0
@@ -607,36 +608,30 @@ backtest_data
 # SAVE DATA ---------------------------------------------------------------
 
 # save data to blob
-cols_keep <- c("datetime", "pr_below_dummy_40", "pr_below_dummy_176",
+KEY = "0M4WRlV0/1b6b3ZpFKJvevg4xbC/gaNBcdtVZW+zOZcRi0ZLfOm1v/j2FZ4v+o8lycJLu1wVE6HT+ASt0DdAPQ=="
+ENDPOINT = "https://snpmarketdata.blob.core.windows.net"
+cols_keep <- c("time", "pr_below_dummy_40", "pr_below_dummy_176",
                "pr_below_dummy_528", "pr_below_dummy_1056", "pr_below_dummy_2112", "pr_below_dummy_4224")
-               # "pr_below_dummy_01_176", "pr_below_dummy_01_1056", "pr_below_dummy_01_2112", "pr_below_dummy_03_528",
-               # "pr_below_dummy_net_40", "pr_below_dummy_net_176", "pr_below_dummy_net_528",
-               # "pr_below_dummy_net_1056", "pr_below_dummy_net_2112", "pr_below_dummy_net_4224")
+# "pr_below_dummy_01_176", "pr_below_dummy_01_1056", "pr_below_dummy_01_2112", "pr_below_dummy_03_528",
+# "pr_below_dummy_net_40", "pr_below_dummy_net_176", "pr_below_dummy_net_528",
+# "pr_below_dummy_net_1056", "pr_below_dummy_net_2112", "pr_below_dummy_net_4224")
 qc_backtest <- backtest_data[, ..cols_keep]
-cols <- setdiff(cols_keep, "datetime")
+cols <- setdiff(cols_keep, "time")
 qc_backtest[, (cols) := lapply(.SD, shift), .SDcols = cols] # VERY IMPORTANT STEP !
 qc_backtest <- na.omit(qc_backtest)
-file_name <- "D:/risks/pr/pr500.csv"
-fwrite(qc_backtest, file_name, col.names = FALSE, dateTimeAs = "write.csv")
-bl_endp_key <- storage_endpoint(Sys.getenv("BLOB-ENDPOINT"), key=Sys.getenv("BLOB-KEY"))
+qc_backtest[, time := as.character(time)]
+file_name <- paste0("pr500-", format(Sys.time(), format = "%Y%m%d%H%M%S"), ".csv")
+bl_endp_key <- storage_endpoint(ENDPOINT, key=KEY)
 cont <- storage_container(bl_endp_key, "qc-backtest")
-storage_upload(cont, file_name, basename(file_name))
+storage_write_csv(qc_backtest, cont, file_name)
 # save for SP100
 qc_backtest_100 <- backtest_data_100[, ..cols_keep]
-cols <- setdiff(cols_keep, "datetime")
+cols <- setdiff(cols_keep, "time")
 qc_backtest_100[, (cols) := lapply(.SD, shift), .SDcols = cols] # VERY IMPORTANT STEP !
 qc_backtest_100 <- na.omit(qc_backtest_100)
-file_name <- "D:/risks/pr/pr100.csv"
-fwrite(qc_backtest_100, file_name, col.names = FALSE, dateTimeAs = "write.csv")
-bl_endp_key <- storage_endpoint(Sys.getenv("BLOB-ENDPOINT"), key=Sys.getenv("BLOB-KEY"))
-cont <- storage_container(bl_endp_key, "qc-backtest")
-storage_upload(cont, file_name, basename(file_name))
-# save all indicators for Matej and Karlo
-file_name <- "D:/risks/pr/pr_ml.csv"
-fwrite(backtest_data, file_name, dateTimeAs = "write.csv")
-bl_endp_key <- storage_endpoint(Sys.getenv("BLOB-ENDPOINT"), key=Sys.getenv("BLOB-KEY"))
-cont <- storage_container(bl_endp_key, "qc-backtest")
-storage_upload(cont, file_name, basename(file_name))
+qc_backtest_100[, time := as.character(time)]
+file_name <- paste0("pr100-", format(Sys.time(), format = "%Y%m%d%H%M%S"), ".csv")
+storage_write_csv(qc_backtest_100, cont, file_name)
 
 
 
@@ -1389,7 +1384,7 @@ signals <- vector("numeric", nrow(sample_))
 for (i in seq_along(signal_)) {
   if (i == 1 || is.na(signal_[i-1])) {
     signals[i] <- NA
-  # } else if (signal_3[i-1]  > 0 & (signal_[i-1] < 0.15 | signal_2[i-1] < 0.15)) {
+    # } else if (signal_3[i-1]  > 0 & (signal_[i-1] < 0.15 | signal_2[i-1] < 0.15)) {
   } else if ((signal_[i-1] < 0.15 | signal_2[i-1] < 0.15)) {
     signals[i] <- 0
   } else {

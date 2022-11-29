@@ -56,7 +56,7 @@ market_data$datetime <- as.POSIXct(as.numeric(market_data$datetime),
                                    tz="EST")
 market_data <- market_data[, .(symbol, datetime, close, returns)]
 market_data <- unique(market_data, by = c("symbol", "datetime"))
-sp500_stocks <- market_data[market_data[, .N, by = .(symbol)][N > 600], on = "symbol"]
+sp500_stocks <- market_data[market_data[, .N, by = .(symbol)][N >= 600], on = "symbol"]
 setorderv(sp500_stocks, c("symbol", "datetime"))
 
 # calculate radf for all stocks
@@ -72,7 +72,7 @@ for (dirs in directories) {
   params_ <- stringr::str_split(gsub(".*/", "", dirs), "-")[[1]]
 
   lapply(symbols, function(x) {
-    # x = symbols[653]
+    # x = symbols[1]
     # print(x)
 
     if (x %in% symbols) {
@@ -89,7 +89,7 @@ for (dirs in directories) {
 
       attributes(sample$datetime)$tzone <- "UTC"
       row_index <- which(sample$datetime == tail(radf_old$datetime, 1)) - as.integer(params_[2])
-      if  ((length(row_index) == 0 | row_index < 0) & max(sample$datetime) >= tail(radf_old$datetime, 1)) {
+      if  ((length(row_index) == 0 || row_index < 0)) { # & max(as.Date(sample$datetime)) >= tail(as.Date(radf_old$datetime), 1)
         sample <- sample
       } else {
         sample <- sample[row_index:nrow(sample)]
@@ -100,6 +100,7 @@ for (dirs in directories) {
                              as.logical(as.integer(params_[1])),
                              as.integer(params_[2]),
                              as.integer(params_[3]))
+      if (length(estimated) == 0) return(NULL)
       estimated_appened <- cbind(symbol = x, datetime = sample$datetime, estimated)
       estimated_appened <- na.omit(estimated_appened)
       estimated_appened <- estimated_appened[!(datetime %in% radf_old$datetime)]
@@ -122,8 +123,8 @@ symbols_saved <- gsub('.csv', '', list.files(exuber_paths))
 
 # price data
 print("Get prices data")
-sp500_stocks <- import_lean("D:/market_data/equity/usa/hour/trades_adjusted")
-sp500_stocks[, returns := (close / shift(close)) - 1, by = .(symbol)]
+# sp500_stocks <- import_lean("D:/market_data/equity/usa/hour/trades_adjusted")
+# sp500_stocks[, returns := (close / shift(close)) - 1, by = .(symbol)]
 spy <- sp500_stocks[symbol == "SPY", .(datetime, close, returns)]
 sp500_stocks <- sp500_stocks[symbol %in% symbols_saved]
 sp500_stocks[, cum_returns := frollsum(returns, 10 * 8), by = .(symbol)]
@@ -148,6 +149,10 @@ exuber_agg <- function(path) {
   # merge exuber and stocks
   exuber_dt <- merge(exuber_dt, sp500_stocks, by = c("symbol", "datetime"), all.x = TRUE, a.y = FALSE)
   setorderv(exuber_dt, c("id", "symbol", "datetime"))
+
+  # REMOVE OLD STOCKS !
+  # exuber_dt[, old_data := max(datetime) < as.Date(Sys.Date() - 10), by = "symbol"]
+  # exuber_dt <- exuber_dt[, .SD[all(!old_data)], by = "symbol"]
 
   # define indicators based on exuber
   radf_vars <- colnames(exuber_dt)[4:ncol(exuber_dt)]

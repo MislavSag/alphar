@@ -22,16 +22,17 @@ account$account$status == 'active'
 
 # doplets
 drops <- analogsea::droplets()
-droplet_id <- drops$`ubuntu-s-2vcpu-4gb-fra1-01-1617289843492-s-2vcpu-4gb-fra1-01`$id # ???
-ip <- drops$`ubuntu-s-2vcpu-4gb-fra1-01-1617289843492-s-2vcpu-4gb-fra1-01`$networks$v4[[1]]$ip_address
+droplet_id <- drops[[1]]$id
+ip <- drops[[1]]$networks$v4[[1]]$ip_address
 print(drops)
 
 # install R
-# plumberDeploy::do_provision(217507640)
+# plumberDeploy::do_provision(droplet_id, example = FALSE)
 
 # install required packages (NEED TO DONWLOAD AGAIN IF I CHANGE MY OWN PACKAGE)
 analogsea::install_r_package(droplet_id, "data.table")
 analogsea::install_r_package(droplet_id, "exuber")
+analogsea::install_r_package(droplet_id, "mlr3")
 analogsea::install_r_package(droplet_id, "fracdiff")
 analogsea::install_r_package(droplet_id, "xts")
 analogsea::install_r_package(droplet_id, "dpseg")
@@ -42,33 +43,71 @@ analogsea::install_r_package(droplet_id, "roll")
 analogsea::install_r_package(droplet_id, "PerformanceAnalytics")
 analogsea::install_r_package(droplet_id, "GAS")
 analogsea::install_r_package(droplet_id, "evir")
-analogsea::install_r_package(droplet_id, "mlr3")
 analogsea::install_r_package(droplet_id, "mlr3verse")
 analogsea::install_r_package(droplet_id, "ranger")
 analogsea::install_r_package(droplet_id, "rvest")
 analogsea::install_r_package(droplet_id, "quarks")
 analogsea::install_r_package(droplet_id, "utils")
-analogsea::install_r_package(droplet_id, "utils")
+analogsea::install_r_package(droplet_id, "reticulate")
+analogsea::install_r_package(droplet_id, "theft")
+analogsea::install_r_package(droplet_id, "tvgarch")
+analogsea::install_github_r_package(droplet_id, "https://github.com/MislavSag/finfeatures")
 analogsea::install_github_r_package(droplet_id, "https://github.com/ottosven/backCUSUM")
 analogsea::install_github_r_package(droplet_id, "https://github.com/MislavSag/mrisk")
 analogsea::install_github_r_package(droplet_id, "https://github.com/hendersontrent/Rcatch22")
 analogsea::install_github_r_package(droplet_id, "https://github.com/mlr-org/mlr3extralearners")
 analogsea::install_github_r_package(droplet_id, "https://github.com/a-hanf/mlr3automl")
 
+
+x <- .libPaths() %>%
+  purrr::set_names() %>%
+  purrr::map(function(lib) {
+    .packages(all.available = TRUE, lib.loc = lib) %>%
+      purrr::keep(function(pkg) {
+        f <- system.file('Meta', 'package.rds', package = pkg, lib.loc = lib)
+        tryCatch({readRDS(f); FALSE}, error = function(e) TRUE)
+      })
+  })
+analogsea::droplet_execute(
+  droplet_id,
+  {
+    library(purrr)
+  .libPaths() %>%
+    purrr::set_names() %>%
+    purrr::map(function(lib) {
+      .packages(all.available = TRUE, lib.loc = lib) %>%
+        purrr::keep(function(pkg) {
+          f <- system.file('Meta', 'package.rds', package = pkg, lib.loc = lib)
+          tryCatch({readRDS(f); FALSE}, error = function(e) TRUE)
+        })
+    })
+})
+
+analogsea::ubuntu_install_r(droplet_id)
+
+
 # upload files
 droplet_ssh(droplet_id, "pwd")
 droplet_upload(
   droplet = droplet_id,
   local = 'C:/Users/Mislav/Documents/GitHub/alphar/mlmodels/classif_ranger_tuned_66097a6ccf34ed25.rds',
-  remote = '/var/plumber/ml_model_risks.rds',# '/root/var/plumber/alphar/ml_model_risks.rds',
+  remote = '/var/plumber/ml_model_risks.rds', # '/root/var/plumber/alphar/ml_model_risks.rds',
   verbose = TRUE
 )
 droplet_upload(
   droplet = droplet_id,
   local = "C:/Users/Mislav/Documents/GitHub/alphar/R/plumber_deploy/ml_model_hft.rds",
-  remote = '/var/plumber/ml_model_hft.rds',# '/root/var/plumber/alphar/ml_model_risks.rds',
+  remote = '/var/plumber/ml_model_hft.rds', # '/root/var/plumber/alphar/ml_model_risks.rds',
   verbose = TRUE
 )
+# TODO ADD FINAL MLR3 MODEL
+droplet_upload(
+  droplet = droplet_id,
+  local = "D:/mlfin/mlr3_models/hftmlr_model.rds",
+  remote = '/var/plumber/hftmlr_model.rds', # '/root/var/plumber/alphar/ml_model_risks.rds',
+  verbose = TRUE
+)
+
 
 # remove droplet if already exists
 redeploy <- function() {
@@ -94,6 +133,14 @@ time <- zoo::index(market_data)
 y <- market_data$close
 x <- market_data$datetime
 
+# base test
+req_body <- list(a = 1, b = 2)
+req_body <- jsonlite::toJSON(req_body, dataframe = 'rows')
+response <- httr::POST(paste0("http://", ip, "/alphar/sum"),
+                       body=req_body, encode="json")
+httr::content(response, simplifyVector=TRUE)
+
+
 # test exuber
 req_body <- list(x = y[1:600], adf_lag=2)
 req_body <- jsonlite::toJSON(req_body, dataframe = 'rows')
@@ -104,14 +151,14 @@ httr::content(response, simplifyVector=TRUE)
 # dpseg
 req_body <- list(time = x[1:600], price = y[1:600], type_ = 'var', p = 0.1)
 req_body <- jsonlite::toJSON(req_body, dataframe = 'rows')
-response <- httr::POST(paste0("http://", '206.81.24.140', "/alphar/dpseg"),
+response <- httr::POST(paste0("http://", ip, "/alphar/dpseg"),
                        body=req_body, encode="json")
 httr::content(response, simplifyVector=TRUE)
 
 # Var
 req_body <- list(x = y[1:600], ptob = 0.99, type = 'modified')
 req_body <- jsonlite::toJSON(req_body, dataframe = 'rows')
-response <- httr::POST(url = paste0("http://", '206.81.24.140', "/alphar/varrisk"),
+response <- httr::POST(url = paste0("http://", ip, "/alphar/varrisk"),
                        body=req_body, encode="json")
 httr::content(response, simplifyVector=TRUE)
 
