@@ -601,15 +601,13 @@ Performance(as.xts.data.table(sample_[, .(datetime, strategy)]))
 
 
 # LONG SHORT TREND --------------------------------------------------------
-
 backtest_data
 
 
 # SAVE DATA ---------------------------------------------------------------
-
 # save data to blob
-KEY = "0M4WRlV0/1b6b3ZpFKJvevg4xbC/gaNBcdtVZW+zOZcRi0ZLfOm1v/j2FZ4v+o8lycJLu1wVE6HT+ASt0DdAPQ=="
-ENDPOINT = "https://snpmarketdata.blob.core.windows.net"
+KEY = Sys.getenv("BLOB-KEY-SNP")
+ENDPOINT = Sys.getenv("BLOB-ENDPOINT-SNP")
 cols_keep <- c("time", "pr_below_dummy_40", "pr_below_dummy_176",
                "pr_below_dummy_528", "pr_below_dummy_1056", "pr_below_dummy_2112", "pr_below_dummy_4224")
 # "pr_below_dummy_01_176", "pr_below_dummy_01_1056", "pr_below_dummy_01_2112", "pr_below_dummy_03_528",
