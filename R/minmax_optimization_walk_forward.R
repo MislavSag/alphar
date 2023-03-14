@@ -45,31 +45,31 @@ NEW <- c("2022-01-01", as.character(Sys.Date()))
 # tiledb_array_close(arr)
 # hour_data_dt <- as.data.table(hour_data)
 # hour_data_dt[, time := as.POSIXct(time, tz = "UTC")]
-# 
+#
 # # keep only trading hours
 # hour_data_dt <- hour_data_dt[as.integer(time_clock_at_tz(time,
 #                                                          tz = "America/New_York",
 #                                                          units = "hours")) %in% 10:16]
-# 
+#
 # # clean data
 # hour_data_dt[, returns := close / shift(close) - 1, by = "symbol"]
 # hour_data_dt <- unique(hour_data_dt, by = c("symbol", "time"))
 # hour_data_dt <- na.omit(hour_data_dt)
-# 
+#
 # # spy data
 # spy <- hour_data_dt[symbol == "SPY", .(time, close, returns)]
 # spy <- unique(spy, by =  "time")
-# 
+#
 # # visualize
 # rtsplot(as.xts.data.table(spy[, .(time, close)]))
 # rtsplot(as.xts.data.table(hour_data_dt[symbol == "AAPL", .(time, close)]))
-# 
+#
 
 
 # MINMAX INDICATORS -------------------------------------------------------
 
 # # read old data
-market_data <- fread("/home/matej/Desktop/minmax_data_20221207.csv")
+market_data <- fread("D:/risks/minmax/minmax_data_20221207.csv")
 market_data <- as.data.table(market_data)
 market_data[, time := as.POSIXct(time, tz = "UTC")]
 
@@ -87,12 +87,12 @@ market_data <- na.omit(market_data)
 spy <- market_data[symbol == "SPY", .(time, close, returns)]
 spy <- unique(spy, by =  "time")
 
-rm(arr)
-rm(config)
-rm(context_with_config)
-rm(hour_data)
-rm(hour_data_dt)
-gc()
+# rm(arr)
+# rm(config)
+# rm(context_with_config)
+# rm(hour_data)
+# rm(hour_data_dt)
+# gc()
 
 
 # exrtreme returns
@@ -137,6 +137,7 @@ indicators_sd[, (excess_sum_cols) := indicators_sd[, ..above_sum_cols] - indicat
 indicators <- merge(indicators, indicators_sd, by = c("time"), all.x = TRUE, all.y = FALSE)
 indicators <- merge(indicators, spy, by = "time")
 
+# free memory
 rm(market_data)
 gc()
 
@@ -144,7 +145,7 @@ gc()
 
 # OPTIMIZE STRATEGY -------------------------------------------------------
 # params for returns
-sma_width <- 1:60
+sma_width <- 1:50
 threshold <- seq(-0.1, 0, by = 0.002)
 vars <- colnames(indicators)[grep("sum_excess_p", colnames(indicators))]
 paramset <- expand.grid(sma_width, threshold, vars, stringsAsFactors = FALSE)
@@ -231,18 +232,17 @@ library(runner)
 library(tsDyn)
 library(parallel)
 
-thresholds <- c(seq(1, 3, 0.02))
-variables <- c("sum_excess_p_999_year", "sd_excess_p_999_2year", "sum_excess_p_999_halfyear")
-sma_window <- c(1:10)
+# thresholds <- c(seq(1, 3, 0.02))
+thresholds <- seq(-0.04, 0, by = 0.001)
+variables <- "sd_excess_p_999_2year" # c("sd_excess_p_999_year", "sd_excess_p_999_2year", "sd_excess_p_999_halfyear")
+sma_window <- c(1:50)
 params <- expand.grid(thresholds, variables, sma_window, stringsAsFactors = FALSE)
 colnames(params) <- c("thresholds", "variables", "sma_window")
 
-
-
-optimization_data<- as.data.frame(indicators[, .(time, returns, sum_excess_p_999_year, sd_excess_p_999_2year, sum_excess_p_999_halfyear)])
+# prepare data
+optimization_data <- as.data.frame(indicators[, .(time, returns, sd_excess_p_999_year, sd_excess_p_999_2year, sd_excess_p_999_halfyear)])
 optimization_data <- optimization_data[complete.cases(optimization_data), ]
 optimization_data <- na.omit(optimization_data)
-
 
 # init
 returns <- optimization_data$returns
@@ -250,34 +250,35 @@ thresholds <- params[, 1]
 vars <- params[, 2]
 ns <- params[, 3]
 
-
-# cl <- makeCluster(8)
-# clusterExport(cl, varlist=c("optimization_data", "params", "backtest_cpp", "EMA", "thresholds", "ns"), envir = environment())
-# clusterEvalQ(cl, {library(tsDyn)})
-# 
-
+# runner
+# can't use parallel processing because can't export Rcpp function to the right node
+# cl <- makeCluster(2)
+# clusterExport(cl, varlist=c("optimization_data", "params", "backtest_cpp",
+#                             "thresholds", "ns", "vars"))
+# clusterEvalQ(cl, {lapply(list("tsDyn", "TTR", "Rcpp"), require, character.only = TRUE)})
 best_params_window <- runner(
   x = optimization_data,
   f = function(x) {
+    # x <- optimization_data[1:1000,]
     x_ <- vapply(1:nrow(params), function(i) backtest_cpp(x$returns,
-                                                          SMA(x[, 2], ns[i]),
+                                                          SMA(x[, vars[i]], ns[i]),
                                                           thresholds[i]),
                  numeric(1))
     returns_strategies <- cbind(params, x_)
     return(returns_strategies[which.max(returns_strategies$x), ])
   },
-  k = 2000, # 2000/4.602549. 1000/3.20532
+  k = 5000, # 2000/1.068162. 1000/3.20532
   na_pad = TRUE,
-  #cl=cl,
+  # cl=cl,
   simplify = FALSE
 )
-#stopCluster(cl)
-gc()
+# stopCluster(cl)
+# gc()
 
 # save best params object
 file_name <- paste0("minmax_bestparams_2000_",
                     format.POSIXct(Sys.time(), format = "%Y%m%d%H%M%S"), "WALK_F_EMA", ".rds")
-file_name <- file.path("/home/matej/Desktop/minmax", file_name)
+file_name <- file.path("D:/risks/minmax", file_name)
 saveRDS(best_params_window, file_name)
 
 # buy using best params
@@ -285,7 +286,15 @@ best_prams_cleaned <- lapply(best_params_window, as.data.table)
 best_prams_cleaned <- rbindlist(best_prams_cleaned, fill = TRUE)
 best_prams_cleaned[, V1 := NULL]
 thresholds_best <- best_prams_cleaned$thresholds
-radf_values <- optimization_data[, c("sum_excess_p_999_year")]
+# unique(best_prams_cleaned$variables)
+# variable_values <- optimization_data[which(best_prams_cleaned$variables == "sd_excess_p_999_halfyear"), "sd_excess_p_999_halfyear", drop = FALSE]
+# indx <- which(best_prams_cleaned$variables == "sd_excess_p_999_year")
+# variable_values[indx, ] <- optimization_data[indx, "sd_excess_p_999_year"]
+# indx <- which(best_prams_cleaned$variables == "sd_excess_p_999_2year")
+# variable_values[indx, ] <- optimization_data[indx, "sd_excess_p_999_2year"]
+# variable_values <- variable_values[[1]]
+# variable_values <- nafill(variable_values, "const", 0)
+variable_values <- optimization_data$sd_excess_p_999_2year
 sma_window_best <- best_prams_cleaned$sma_window
 returns_best <- returns[1:length(sma_window_best)]
 # expanding
@@ -298,8 +307,8 @@ returns_best <- returns[1:length(sma_window_best)]
 # }, numeric(1))
 # rolling
 indicators_sma <- vapply(seq_along(returns_best), function(x) {
-  if (x > 2000) {
-    tail(SMA(radf_values[(x - 2000):x], n = sma_window_best[x]), 1)
+  if (x > 5000 & !(is.na(sma_window_best[x]))) {
+    tail(SMA(variable_values[(x - 5000):x], n = sma_window_best[x]), 1)
   } else {
     return(NA)
   }
@@ -314,7 +323,7 @@ sides <- vector("integer", length(returns_best))
 for (i in seq_along(sides)) {
   if (i %in% c(1) || is.na(indicators_sma[i-1])) {
     sides[i] <- 1
-  } else if (indicators_sma[i-1] > thresholds_best[i-1] & indicators_sma[i-1] > 1.8)  {
+  } else if (indicators_sma[i-1] < thresholds_best[i-1])  {
     sides[i] <- 0
   } else {
     sides[i] <- 1

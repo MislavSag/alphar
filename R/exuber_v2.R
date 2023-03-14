@@ -27,10 +27,12 @@ context_with_config <- tiledb_ctx(config)
 
 # parameters
 exuber_window = 600 # 100, 600
-universe = "sp100"  # sp100, sp500, all
+universe = "sp500"  # sp100, sp500, all
 
 # import hour ohlcv
-arr <- tiledb_array("D:/equity-usa-hour-fmpcloud-adjusted", as.data.frame = TRUE)
+arr <- tiledb_array("D:/equity-usa-hour-fmpcloud-adjusted",
+                    as.data.frame = TRUE,
+                    query_layout = "UNORDERED")
 hour_data <- arr[]
 tiledb_array_close(arr)
 hour_data_dt <- as.data.table(hour_data)
@@ -85,6 +87,7 @@ if (universe == "sp100") {
     (`[[`)(3) |>
     html_table(x = _, fill = TRUE) |>
     (`[[`)(1)
+  sp100 <- c(sp100)
   exuber_dt_sample <- exuber_dt[symbol %in% sp100]
 } else if (universe == "sp500") {
   fmp = FMP$new()
@@ -104,10 +107,20 @@ indicators_sum <- exuber_dt_sample[, lapply(.SD, sum, na.rm = TRUE), by = c('tim
 colnames(indicators_sum)[2:ncol(indicators_sum)] <- paste0("sum_", colnames(indicators_sum)[2:ncol(indicators_sum)])
 indicators_q <- exuber_dt_sample[, lapply(.SD, quantile, probs = 0.99, na.rm = TRUE), by = c('time'), .SDcols = radf_vars]
 colnames(indicators_q)[2:ncol(indicators_q)] <- paste0("q99_", colnames(indicators_q)[2:ncol(indicators_q)])
+indicators_q97 <- exuber_dt_sample[, lapply(.SD, quantile, probs = 0.97, na.rm = TRUE), by = c('time'), .SDcols = radf_vars]
+colnames(indicators_q97)[2:ncol(indicators_q97)] <- paste0("q97_", colnames(indicators_q97)[2:ncol(indicators_q97)])
+indicators_q95 <- exuber_dt_sample[, lapply(.SD, quantile, probs = 0.95, na.rm = TRUE), by = c('time'), .SDcols = radf_vars]
+colnames(indicators_q95)[2:ncol(indicators_q95)] <- paste0("q95_", colnames(indicators_q95)[2:ncol(indicators_q95)])
+indicators_skew <- exuber_dt_sample[, lapply(.SD, skewness, na.rm = TRUE), by = c('time'), .SDcols = radf_vars]
+colnames(indicators_skew)[2:ncol(indicators_skew)] <- paste0("skew_", colnames(indicators_skew)[2:ncol(indicators_skew)])
+indicators_kurt <- exuber_dt_sample[, lapply(.SD, kurtosis, na.rm = TRUE), by = c('time'), .SDcols = radf_vars]
+colnames(indicators_kurt)[2:ncol(indicators_kurt)] <- paste0("kurt_", colnames(indicators_kurt)[2:ncol(indicators_kurt)])
 
 # merge indicators
 indicators <- Reduce(function(x, y) merge(x, y, by = "time", all.x = TRUE, all.y = FALSE),
-                     list(indicators_sd, indicators_median, indicators_sum, indicators_q))
+                     list(indicators_sd, indicators_median, indicators_sum,
+                          indicators_q, indicators_q97, indicators_q95,
+                          indicators_skew, indicators_kurt))
 setorderv(indicators, c("time"))
 indicators <- na.omit(indicators)
 
@@ -127,6 +140,17 @@ indicators <- na.omit(indicators)
 # rtsplot(as.xts.data.table(indicators[, .(time, q99_adf_log = diff(q99_adf_log))]))
 # rtsplot(as.xts.data.table(indicators[, c(1, 7)]), col = cols)
 # rtsplot(as.xts.data.table(indicators[28000:nrow(indicators), .(time, q99_radf_sum = diff(q99_radf_sum))]))
+# median
+rtsplot(as.xts.data.table(indicators[, .(time, median_radf_sum)]))
+# q97
+rtsplot(as.xts.data.table(indicators[, .(time, q97_radf_sum)]))
+# q99
+rtsplot(as.xts.data.table(indicators[, .(time, q99_radf_sum)]))
+# skew
+rtsplot(as.xts.data.table(indicators[, .(time, skew_radf_sum)]))
+# rtsplot(as.xts.data.table(indicators[28000:nrow(indicators), .(time, skew_radf_sum = diff(q99_radf_sum))]))
+# kurtosis
+rtsplot(as.xts.data.table(indicators[, .(time, kurt_sadf_log)]))
 
 # backtest functions
 backtest <- function(returns, indicator, threshold, return_cumulative = TRUE) {
@@ -194,11 +218,16 @@ Performance <- function(x) {
 }
 
 # optimization params
-thresholds <- c(seq(1, 9, 0.02))
-variables <- colnames(indicators)[c(20:22, 25)]
-sma_window <- c(1:50)
-params <- expand.grid(thresholds, variables, sma_window, stringsAsFactors = FALSE)
-colnames(params) <- c("thresholds", "variables", "sma_window")
+variables <- colnames(indicators)[2:length(colnames(indicators))]
+params <- indicators[, ..variables][, lapply(.SD, quantile, probs = seq(0, 1, 0.02))]
+params <- melt(params)
+params <- merge(data.frame(sma_width=1:2), params, by=NULL)
+
+# thresholds <- c(seq(1, 9, 0.02))
+# thresholds <- indicators[ , ..variables][, .(q1 = quantile(.SD), max = max(.SD))]
+# sma_window <- c(1:50)
+# params <- expand.grid(thresholds, variables, sma_window, stringsAsFactors = FALSE)
+# colnames(params) <- c("thresholds", "variables", "sma_window")
 
 # optim data
 optimization_data <- merge(hour_data_dt[symbol == "SPY"], indicators,
@@ -213,9 +242,9 @@ optimization_data <- na.omit(optimization_data)
 
 # help vectors
 returns <- optimization_data$returns
-thresholds <- params[, 1]
-vars <- params[, 2]
-ns <- params[, 3]
+thresholds <- params[, 3]
+vars <- as.vector(params[, 2])
+ns <- params[, 1]
 
 # optimizations loop
 x <- vapply(1:nrow(params), function(i) backtest_cpp(returns,
@@ -235,9 +264,9 @@ ggplot(dt_[variables == "sd_radf_sum"], aes(thresholds, sma_window, fill= x)) +
   geom_tile()
 
 # backtest individual
-threshold <- 5
+threshold <- 0.8
 strategy_returns <- backtest(optimization_data$returns,
-                             SMA(optimization_data$q99_radf_sum, 3),
+                             optimization_data$q97_bsadf_log,
                              threshold,
                              FALSE)
 charts.PerformanceSummary(xts(cbind(optimization_data$returns, strategy_returns), order.by = optimization_data$time))
@@ -397,6 +426,15 @@ file_name <- paste0("exuber_bestparams_2000_",
 file_name <- file.path("D:/features", file_name)
 saveRDS(best_params_window, file_name)
 
+# read existing
+list.files("D:/features")
+best_params_window <- readRDS("D:/features/exuber_bestparams_2000_20221128055057.rds")
+length(best_params_window)
+best_params_window[[1]]
+best_params_window[[1999]]
+best_params_window[[2000]]
+dim(optimization_data)
+
 # buy using best params
 best_prams_cleaned <- lapply(best_params_window, as.data.table)
 best_prams_cleaned <- rbindlist(best_prams_cleaned, fill = TRUE)
@@ -427,11 +465,12 @@ indicators_sma <- vapply(seq_along(returns_best), function(x) {
 # indicators_sma <- inputs$X2
 # thresholds_best <- inputs$X3
 # merge(optimization_data, indicators_sma)
+summary(radf_values)
 sides <- vector("integer", length(returns_best))
 for (i in seq_along(sides)) {
   if (i %in% c(1) || is.na(indicators_sma[i-1])) {
     sides[i] <- 1
-  } else if (indicators_sma[i-1] > thresholds_best[i-1] & indicators_sma[i-1] > 1.8)  {
+  } else if (indicators_sma[i-1] > thresholds_best[i-1])  {
     sides[i] <- 0
   } else {
     sides[i] <- 1
@@ -455,9 +494,7 @@ qc_data[, (cols) := lapply(.SD, shift), .SDcols = cols]
 qc_data <- na.omit(qc_data)
 qc_data[, time := with_tz(time, "America/New_York")]
 qc_data[, time := as.character(time)]
-SNP_KEY = "0M4WRlV0/1b6b3ZpFKJvevg4xbC/gaNBcdtVZW+zOZcRi0ZLfOm1v/j2FZ4v+o8lycJLu1wVE6HT+ASt0DdAPQ=="
-SNP_ENDPOINT = "https://snpmarketdata.blob.core.windows.net/"
-bl_endp_key <- storage_endpoint(SNP_ENDPOINT, key=SNP_KEY)
+bl_endp_key <- storage_endpoint(Sys.getenv("BLOB-ENDPOINT-SNP"), Sys.getenv("BLOB-KEY-SNP"))
 cont <- storage_container(bl_endp_key, "qc-backtest")
 time_ <- format.POSIXct(Sys.time(), format = "%Y%m%d%H%M%S")
 file_name <- paste0("exuber_wf_", time_, ".csv")
@@ -466,8 +503,19 @@ storage_write_csv(qc_data, cont, file_name, col_names = FALSE)
 
 
 # ECONOMETRIC TS ----------------------------------------------------------
+# optim data
+X <- merge(hour_data_dt[symbol == "SPY"], indicators,
+           by = "time", all.x = TRUE, all.y = FALSE)
+X <- X[as.integer(time_clock_at_tz(time,
+                                   tz = "America/New_York",
+                                   units = "hours")) %in% 10:16]
+setorder(X, time)
+X[, returns := close / shift(close) - 1]
+X <- X[, .SD, .SDcols = c(1, 8:ncol(X))]
+X <- na.omit(X)
+
 # prepare data
-X <- as.data.frame(optimization_data[, .(returns, sd_radf_sum)])
+X_vars <- as.data.frame(X[, .(returns, sd_radf_sum)])
 
 # descriptive
 acf(X$returns)     # short memory
@@ -496,13 +544,17 @@ acf(X$sd_radf_sum) # long memory
 library(vars)
 library(tsDyn)
 
-window_lengths <- c(7 * 22 * 6)
-roll_preds_2 <- lapply(window_lengths, function(x) {
+# window_lengths <- c(7 * 22 * 3, 7 * 22 * 6, 7 * 22 * 12, 7 * 22 * 24)
+window_lengths <- c(7 * 22 * 2, 7 * 22 * 6)
+cl <- makeCluster(8)
+clusterExport(cl, "X", envir = environment())
+clusterEvalQ(cl, {library(tsDyn)})
+roll_preds <- lapply(window_lengths, function(x) {
   runner(
-    x = X[1:930,],
+    x = X_vars,
     f = function(x) {
       # debug
-      # x = X[1:500, ]
+      # x = X_vars[1:500, ]
 
       # # TVAR (1)
       tv1 <- tryCatch(TVAR(data = x,
@@ -520,109 +572,82 @@ roll_preds_2 <- lapply(window_lengths, function(x) {
         # tv1$coeffmat
         tv1_pred <- predict(tv1)[, 1]
         names(tv1_pred) <- paste0("predictions_", 1:5)
-        data.frame(as.list(tv1_pred))
-        data.frame(threshold = tv1$model.specific$Thresh,
-                   predictions = data.frame(as.list(tv1_pred)))
+        thresholds <- tv1$model.specific$Thresh
+        names(thresholds) <- paste0("threshold_", seq_along(thresholds))
+        coef_1 <- tv1$coefficients$Bdown[1, ]
+        names(coef_1) <- paste0(names(coef_1), "_bdown")
+        coef_2 <- tv1$coefficients$Bmiddle[1, ]
+        names(coef_2) <- paste0(names(coef_2), "_bmiddle")
+        coef_3 <- tv1$coefficients$Bup[1, ]
+        names(coef_3) <- paste0(names(coef_3), "_bup")
+        cbind.data.frame(as.data.frame(as.list(thresholds)),
+                         as.data.frame(as.list(tv1_pred)),
+                         data.frame(aic = AIC(tv1)),
+                         data.frame(bic = BIC(tv1)),
+                         data.frame(loglik = logLik(tv1)),
+                         as.data.frame(as.list(coef_1)),
+                         as.data.frame(as.list(coef_2)),
+                         as.data.frame(as.list(coef_3)))
       }
     },
     k = x,
     lag = 0L,
+    cl = cl,
     na_pad = TRUE
   )
 })
+stopCluster(cl)
+gc()
 
 # save results
 # file_name <- paste0("exuber_threshold2_", format.POSIXct(Sys.time(), format = "%Y%m%d%H%M%S"), ".rds")
 # file_name <- file.path("D:/features", file_name)
-# saveRDS(roll_preds_2, file_name)
+# saveRDS(roll_preds, file_name)
 
 # read results
 # list.files("D:/features")
-roll_preds <- readRDS(file.path("D:/features", "exuber_threshold2_20221128054703.rds"))
-roll_preds_2
-roll_preds[[1]][[924]]
-roll_preds_2[[1]][[924]]
-
-test <- lapply(roll_preds[[1]], function(x) {
-  if (all(!(is.na(x)))) {
-   return(x[1,1] == 2.167893)
-  }
-})
-which(unlist(test) == TRUE)
+# roll_preds <- readRDS(file.path("D:/features", "exuber_threshold2_20221128054703.rds"))
 
 # extract info from object
 roll_results <- lapply(roll_preds, function(x) lapply(x, as.data.table))
-length(roll_results[[1]])
-roll_results[[1]][[924]]
-
-
-
-roll_results <- lapply(roll_preds[[1]], function(x) {
-  if (length(x) > 1) {
-    threshold_1 <- x[1, 1]
-    threshold_2 <- x[2, 1]
-    predictions <- x[1, 2:6]
-    return(cbind.data.frame(threshold_1, threshold_2, predictions))
-  } else {
-    na_df <- cbind.data.frame(t(rep(NA, 7)))
-    colnames(na_df) <- c("threshold_1", "threshold_2",
-                         "predictions.predictions_1",
-                         "predictions.predictions_2",
-                         "predictions.predictions_3",
-                         "predictions.predictions_4",
-                         "predictions.predictions_5")
-    return(na_df)
-  }
+roll_results <- lapply(roll_results, rbindlist, fill = TRUE)
+roll_results[[1]]
+tvar_res <- lapply(roll_results, function(x){
+  cbind(X[1:nrow(x), .(time, returns, sd_radf_sum)], x)
 })
-roll_results <- rbindlist(roll_results, fill = TRUE)
-# roll_results <- lapply(roll_results, rbindlist, fill = TRUE)
-# lapply(roll_results, function(x) x[, V1 := NULL])
-roll_results <- lapply(seq_along(roll_results), function(i) {
-  colnames(roll_results[[i]]) <- paste0(colnames(roll_results[[i]]), "_", window_lengths[i])
-  roll_results[[i]]
-})
-roll_results <- as.data.table(do.call(cbind, roll_results))
-roll_results <- roll_results[, lapply(.SD, unlist)]
-# roll_results$mean_pred <- apply(roll_results, 1, function(x) mean(x))
-roll_results <- cbind(optimization_data[, .(time, returns, sd_radf_sum)], roll_results)
 
 # visualize
-roll_results
-ggplot(roll_results, aes(time)) +
-  geom_line(aes(y = threshold_924)) +
-  geom_line(aes(y = sd_radf_sum, color = "red"))
-ggplot(roll_results[time %between% c("2020-01-01", "2022-10-01")], aes(time)) +
-  geom_line(aes(y = threshold_924)) +
-  geom_line(aes(y = sd_radf_sum, color = "red"))
+ggplot(tvar_res[[1]], aes(time)) +
+  geom_line(aes(y = threshold_1), color = "green") +
+  geom_line(aes(y = threshold_2), color = "red") +
+  geom_line(aes(y = sd_radf_sum))
+ggplot(tvar_res[[1]], aes(time)) +
+  geom_line(aes(y = bic), color = "green")
+ggplot(tvar_res[[1]][time %between% c("2020-01-01", "2022-10-01")], aes(time)) +
+  geom_line(aes(y = threshold_1), color = "green") +
+  geom_line(aes(y = threshold_2), color = "red") +
+  geom_line(aes(y = sd_radf_sum))
 
 # threshold based backtest
-returns <- roll_results$returns
-thresholds <- roll_results$threshold_924
-indicator <- roll_results$sd_radf_sum
-predictions <- roll_results$`predictions.predictions_1_924`
-sides <- vector("integer", length(predictions))
-sides <- vector("integer", length(returns))
-for (i in seq_along(sides)) {
-  if (i %in% c(1) || is.na(thresholds[i-1])) {
-    sides[i] <- NA
-  } else if (indicator[i-1] > thresholds[i-1] & predictions[i-1] > 0) {
-    sides[i] <- 0
-  } else {
-    sides[i] <- 1
-  }
-}
-sides <- ifelse(is.na(sides), 1, sides)
-returns_strategy <- returns * sides
-PerformanceAnalytics::Return.cumulative(returns_strategy)
-PerformanceAnalytics::charts.PerformanceSummary(xts(cbind(returns, returns_strategy), order.by = roll_results$time))
-
-# backtest
-backtest_var <- function(returns, predictions, return_cumulative = TRUE) {
+tvar_backtest <- function(tvar_res_i) {
+  # tvar_res_i <- tvar_res[[2]]
+  returns <- tvar_res_i$returns
+  threshold_1 <- tvar_res_i$threshold_1
+  threshold_2 <- tvar_res_i$threshold_2
+  coef_top_1 <- tvar_res_i$sd_radf_sum..1_bup
+  coef_top_2 <- tvar_res_i$sd_radf_sum..2_bup
+  aic_ <- tvar_res_i$aic
+  indicator <- tvar_res_i$sd_radf_sum
+  predictions <- tvar_res_i$predictions_1
   sides <- vector("integer", length(predictions))
+  sides <- vector("integer", length(returns))
   for (i in seq_along(sides)) {
-    if (i %in% c(1) || is.na(predictions[i-1])) {
+    if (i %in% c(1) || is.na(threshold_2[i-1]) || is.na(threshold_2[i-2])) {
       sides[i] <- NA
-    } else if (predictions[i-1] > 0.001) {
+    # } else if (indicator[i-1] > threshold_2[i-1]) {
+    # } else if (indicator[i-1] > threshold_2[i-1] & coef_top_1[i-1] < 0) {
+      # } else if (indicator[i-1] > threshold_2[i-1] & predictions[i-1] < 0.01) {
+    # } else if (aic_[i-1] > -4500) {
       sides[i] <- 0
     } else {
       sides[i] <- 1
@@ -630,16 +655,32 @@ backtest_var <- function(returns, predictions, return_cumulative = TRUE) {
   }
   sides <- ifelse(is.na(sides), 1, sides)
   returns_strategy <- returns * sides
-  if (return_cumulative) {
-    return(PerformanceAnalytics::Return.cumulative(returns_strategy))
-  } else {
-    return(returns_strategy)
-  }
+  returns_strategy
+  Return.cumulative(returns_strategy)
 }
-backtest_var(returns = roll_results$returns, predictions = roll_results$`predictions.predictions_1_924`)
-strategy <- backtest_var(returns = roll_results$returns, predictions = roll_results$`predictions.predictions_1_924`, FALSE)
-dt <- as.xts.data.table(cbind(roll_results[, .(time, returns)], strategy))
-charts.PerformanceSummary(dt)
+lapply(tvar_res, function(x) Return.cumulative(tvar_backtest(x)))
+window_lengths / 7 / 22
+returns_strategy <- tvar_backtest(tvar_res[[2]])
+PerformanceAnalytics::Return.cumulative(returns_strategy)
+charts.PerformanceSummary(xts(cbind(returns, returns_strategy), order.by = tvar_res[[2]]$time))
+charts.PerformanceSummary(xts(tail(cbind(returns, returns_strategy), 2000), order.by = tail(tvar_res[[2]]$time, 2000)))
+
+# save data for QC
+qc_data <- cbind.data.frame(time = optimization_data$time,
+                            indicator = indicator,
+                            threshold = thresholds)
+qc_data <- as.data.table(qc_data)
+cols <- colnames(qc_data)[2:ncol(qc_data)]
+qc_data[, (cols) := lapply(.SD, shift), .SDcols = cols]
+qc_data <- na.omit(qc_data)
+qc_data[, time := with_tz(time, "America/New_York")]
+qc_data[, time := as.character(time)]
+bl_endp_key <- storage_endpoint(Sys.getenv("BLOB-ENDPOINT-SNP"), Sys.getenv("BLOB-KEY-SNP"))
+cont <- storage_container(bl_endp_key, "qc-backtest")
+time_ <- format.POSIXct(Sys.time(), format = "%Y%m%d%H%M%S")
+file_name <- paste0("exuber_tvar_", time_, ".csv")
+storage_write_csv(qc_data, cont, file_name, col_names = FALSE)
+print(file_name)
 
 
 

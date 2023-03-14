@@ -1,47 +1,35 @@
+# Title:  Title
+# Author: Name
+# Description: Description
+
+# packages
+library(tiledb)
 library(data.table)
-library(pins)
-library(AzureStor)
+library(checkmate)
 library(httr)
 library(findata)
-library(ggplot2)
-library(patchwork)
-library(fredr)
-library(gausscov)
-library(vars)
-library(BigVAR)
-library(tsDyn)
-library(runner)
-library(PerformanceAnalytics)
-library(naniar)
-library(finfeatures)
-library(mlr3verse)
-library(mlr3pipelines)
-library(tiledb)
-library(DescTools)
-library(rvest)
-library(RcppQuantuccia)
-library(parallel)
 
 
 
-# set up
-setCalendar("UnitedStates::NYSE")
-endpoint <- storage_endpoint(Sys.getenv("BLOB-ENDPOINT"), key=Sys.getenv("BLOB-KEY"))
-CACHEDIR = "D:/findata" # here define your local folder wher data will be saved
-board_prices <- board_azure(
-  container = storage_container(endpoint, "fmpcloud-daily"),
-  path = "",
-  n_processes = 6L,
-  versioned = FALSE,
-  cache = CACHEDIR
-)
-fred_api_key <- "fb7e8cbac4b84762980f507906176c3c"
-fredr_set_key(fred_api_key)
+# SET UP ------------------------------------------------------------------
+# check if we have all necessary env variables
+assert_choice("AWS-ACCESS-KEY", names(Sys.getenv()))
+assert_choice("AWS-SECRET-KEY", names(Sys.getenv()))
+assert_choice("AWS-REGION", names(Sys.getenv()))
+assert_choice("BLOB-ENDPOINT", names(Sys.getenv()))
+assert_choice("BLOB-KEY", names(Sys.getenv()))
+assert_choice("APIKEY-FMPCLOUD", names(Sys.getenv()))
+assert_choice("FRED-KEY", names(Sys.getenv()))
+
+# set credentials
 config <- tiledb_config()
-config["vfs.s3.aws_access_key_id"] <- "AKIA43AHCLIILOAE5CVS"
-config["vfs.s3.aws_secret_access_key"] <- "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"
-config["vfs.s3.region"] <- "eu-central-1"
+config["vfs.s3.aws_access_key_id"] <- Sys.getenv("AWS-ACCESS-KEY")
+config["vfs.s3.aws_secret_access_key"] <- Sys.getenv("AWS-SECRET-KEY")
+config["vfs.s3.region"] <- Sys.getenv("AWS-REGION")
 context_with_config <- tiledb_ctx(config)
+fredr_set_key(Sys.getenv("FRED-KEY"))
+
+# parameters
 
 # date segments
 DOTCOM <- c("2000-01-01", "2002-01-01")
@@ -53,31 +41,75 @@ NEW <- c("2022-01-01", as.character(Sys.Date()))
 
 
 
+# UNIVERSES ---------------------------------------------------------------
+# universe consists of US stocks
+url <- modify_url("https://financialmodelingprep.com/",
+                  path = "api/v3/stock/list",
+                  query = list(apikey = Sys.getenv("APIKEY-FMPCLOUD")))
+p <- GET(url)
+res <- content(p)
+securities <- rbindlist(res, fill = TRUE)
+stocks_us <- securities[type == "stock" &
+                          exchangeShortName %in% c("AMEX", "NASDAQ", "NYSE", "OTC")]
+symbols_list <- stocks_us[, unique(symbol)]
+
+# sp500 symbols
+fmp = FMP$new()
+sp500_symbols <- fmp$get_sp500_symbols()
+sp500_symbols <- na.omit(sp500_symbols)
+sp500_symbols <- sp500_symbols[!grepl("/", sp500_symbols)]
+
+
+
+
+# MARKET DATA -------------------------------------------------------------
+# import market data (choose frequency)
+arr <- tiledb_array("D:/equity-usa-daily-fmp",
+                    as.data.frame = TRUE,
+                    query_layout = "UNORDERED"
+)
+system.time(prices <- arr[])
+tiledb_array_close(arr)
+prices <- as.data.table(prices)
+
+# filter dates and symbols
+prices_dt <- prices[symbol %in% c(unique(events), "SPY")]
+prices_dt <- prices_dt[date > as.Date("2010-01-01")]
+prices_dt <- unique(prices_dt, by = c("symbol", "date"))
+prices_dt[symbol == "SPY"]
+prices_dt[symbol == "ZYXI"]
+
+# free resources
+rm(prices)
+gc()
+
+# clean daily prices
+prices_dt <- prices_dt[open > 0 & high > 0 & low > 0 & close > 0 & adjClose > 0] # remove rows with zero and negative prices
+setorder(prices_dt, "symbol", "date")
+prices_dt[, returns := adjClose   / data.table::shift(adjClose) - 1, by = symbol] # calculate returns
+prices_dt <- prices_dt[returns < 1] # TODO:: better outlier detection mechanism. For now, remove daily returns above 100%
+adjust_cols <- c("open", "high", "low")
+prices_dt[, (adjust_cols) := lapply(.SD, function(x) x * (adjClose / close)), .SDcols = adjust_cols] # adjust open, high and low prices
+prices_dt[, close := adjClose]
+prices_dt <- na.omit(prices_dt[, .(symbol, date, open, high, low, close, volume, returns)])
+prices_n <- prices_dt[, .N, by = symbol]
+prices_n <- prices_n[N > 700]  # remove prices with only 700 or less observations
+prices_dt <- prices_dt[symbol %in% prices_n]
+
+# save SPY for later and keep only events symbols
+spy <- prices_dt[symbol == "SPY"]
+setorder(spy, date)
+
+
+
+
+
+
+
+
+
+
 # IMPORT DATA -------------------------------------------------------------
-# FMPCLOUD symbols
-url_symbols <- "https://financialmodelingprep.com/api/v3/stock/list"
-symbols <- GET(url_symbols, query = list(apikey = Sys.getenv("APIKEY-FMPCLOUD")))
-symbols <- content(symbols)
-symbols <- rbindlist(symbols)
-url_tradeable_symbols <- "https://financialmodelingprep.com/api/v3/available-traded/list"
-tradeable_symbols <- GET(url_tradeable_symbols, query = list(apikey = Sys.getenv("APIKEY-FMPCLOUD")))
-tradeable_symbols <- rbindlist(content(tradeable_symbols))
-
-# get USA stock symbols
-usa_symbols <- symbols[exchangeShortName %in% c("AMEX", "NASDAQ", "NYSE", "OTC")] # remove ETF ?
-
-# market data
-daily_prices_files <- pin_list(board_prices)
-files_new <- setdiff(daily_prices_files, list.files(CACHEDIR))
-lapply(files_new, pin_download, board = board_prices)
-files_local <- vapply(file.path(CACHEDIR, daily_prices_files),
-                      list.files, recursive = TRUE, pattern = "\\.csv", full.names = TRUE,
-                      FUN.VALUE = character(1))
-# plan(multicore(workers = 4L))
-prices_l <- lapply(files_local, fread)
-prices <- prices_l[vapply(prices_l, function(x) nrow(x) > 0, FUN.VALUE = logical(1))]
-prices <- rbindlist(prices)
-
 # clean daily prices
 prices <- prices[open > 0 & high > 0 & low > 0 & close > 0 & adjClose > 0] # remove rows with zero and negative prices
 prices <- unique(prices, by = c("symbol", "date")) #TODO SEND MAIL TO FMP CLOUD ! WHY WE HAVE DUPLICATED ROWS, DIFFERENT ADJUSTED CLOSE PRICES

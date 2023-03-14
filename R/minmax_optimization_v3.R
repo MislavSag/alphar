@@ -22,16 +22,24 @@ NEW <- c("2022-01-01", as.character(Sys.Date()))
 
 # IMPORT DATA -------------------------------------------------------------
 # import market data
-arr <- tiledb_array("D:/equity-usa-hour-fmpcloud-adjusted", as.data.frame = TRUE)
+arr <- tiledb_array("D:/equity-usa-hour-fmpcloud-adjusted",
+                    as.data.frame = TRUE,
+                    query_layout = "UNORDERED")
 system.time(hour_data <- arr[])
 tiledb_array_close(arr)
 hour_data_dt <- as.data.table(hour_data)
 hour_data_dt[, time := as.POSIXct(time, tz = "UTC")]
+setorder(hour_data_dt, symbol, time)
 
-# keep only trading hours
-hour_data_dt <- hour_data_dt[as.integer(time_clock_at_tz(time,
-                                                         tz = "America/New_York",
-                                                         units = "hours")) %in% 10:16]
+# change timezone and keep only trading hours
+hour_data_dt[, time := with_tz(time, tzone = "America/New_York")]
+hour_data_dt <- hour_data_dt[as.ITime(time) %between% c(as.ITime("09:30:00"),
+                                                        as.ITime("16:00:00"))]
+
+# # keep only trading hours (OLD WAY)
+# hour_data_dt <- hour_data_dt[as.integer(time_clock_at_tz(time,
+#                                                          tz = "America/New_York",
+#                                                          units = "hours")) %in% 10:16]
 
 # clean data
 hour_data_dt[, returns := close / shift(close) - 1, by = "symbol"]
@@ -88,13 +96,16 @@ market_data[, p_95_halfyear := roll::roll_quantile(returns, 255*4, p = 0.95), by
 market_data[, p_05_halfyear := roll::roll_quantile(returns, 255*4, p = 0.05), by = .(symbol)]
 
 # save market data
-# file_name <- paste0("D:/risks/minmax/minmax_data_",
-#                     format(Sys.Date(), format = "%Y%m%d"),".csv")
+# time_ <- format(Sys.Date(), format = "%Y%m%d")
+# file_name <- paste0("D:/risks/minmax/minmax_data_", time_,".csv")
 # fwrite(market_data, file_name)
+# zip::zipr(zipfile = "D:/risks/minmax/minmax_data_20221207.zip",
+#           files = "D:/risks/minmax/minmax_data_20221207.csv",
+#           compression_level = 9)
 
 # # read old data
 # list.files("D:/risks/minmax")
-# market_data <- fread("D:/risks/minmax/minmax_data_20221024.csv")
+# market_data <- fread("D:/risks/minmax/minmax_data_20221207.csv")
 
 # exrtreme returns
 cols <- colnames(market_data)[grep("^p_9", colnames(market_data))]
@@ -137,6 +148,7 @@ indicators_sd[, (excess_sum_cols) := indicators_sd[, ..above_sum_cols] - indicat
 # merge indicators and spy
 indicators <- merge(indicators, indicators_sd, by = c("time"), all.x = TRUE, all.y = FALSE)
 indicators <- merge(indicators, spy, by = "time")
+
 
 
 
@@ -215,13 +227,6 @@ threshold <- seq(-0.1, 0, by = 0.002)
 vars <- colnames(indicators)[grep("sum_excess_p", colnames(indicators))]
 paramset <- expand.grid(sma_width, threshold, vars, stringsAsFactors = FALSE)
 colnames(paramset) <- c('sma_width', 'threshold', "vars")
-
-# params for returns
-rsi_width <- 10:50
-threshold <- seq(30, 70, by = 1)
-vars <- colnames(indicators)[grep("sum_excess_p", colnames(indicators))]
-paramset_rsi <- expand.grid(rsi_width, threshold, vars, stringsAsFactors = FALSE)
-colnames(paramset_rsi) <- c('rsi_width', 'threshold', "vars")
 
 # params for dummies
 threshold <- seq(0, 60, by = 1)
@@ -340,7 +345,8 @@ setorder(cum_returns_dt, cum_returns)
 # backtest optimization for dummy indicators
 cum_returns_dummy <- function(paramset) {
   cum_returns <- vapply(1:nrow(paramset), function(x) {
-    results <- backtest_dummy(indicators$returns, indicators[, get(paramset[x, 2])], paramset[x, 1])
+    excess_sma <- SMA(indicators[, get(paramset[x, 3])], paramset[x, 1])
+    results <- backtest_dummy(indicators$returns, excess_sma, paramset[x, 2])
     return(results)
   }, numeric(1))
   results <- as.data.table(cbind(paramset, cum_returns))
@@ -363,21 +369,21 @@ setorder(cum_returns_dummy_dt, cum_returns)
 # n best
 head(cum_returns_dt, 50)
 tail(cum_returns_dt, 100)
-head(cum_returns_rsi_dt, 50)
-tail(cum_returns_rsi_dt, 50)
+# head(cum_returns_rsi_dt, 50)
+# tail(cum_returns_rsi_dt, 50)
 head(cum_returns_dummy_dt, 50)
 tail(cum_returns_dummy_dt, 50)
 head(cum_returns_sd_dt, 50)
 tail(cum_returns_sd_dt, 50)
 
 # summary statistics
+# returns
 dcast(cum_returns_dt, vars ~ ., value.var = "cum_returns", fun.aggregate = median)
 dcast(cum_returns_dt, vars ~ ., value.var = "cum_returns", fun.aggregate = mean)
 dcast(cum_returns_dt, vars ~ ., value.var = "cum_returns", fun.aggregate = quantile, p = 0.10)
 dcast(cum_returns_dt, vars ~ ., value.var = "cum_returns", fun.aggregate = quantile, p = 0.90)
 dcast(cum_returns_dt, vars ~ ., value.var = "cum_returns", fun.aggregate = quantile, p = 0.80)
 skimr::skim(cum_returns_dt)
-
 # dummy
 dcast(cum_returns_dummy_dt, vars ~ ., value.var = "cum_returns", fun.aggregate = median)
 dcast(cum_returns_dummy_dt, vars ~ ., value.var = "cum_returns", fun.aggregate = mean)
@@ -393,49 +399,15 @@ ggplot(cum_returns_dummy_dt[grepl("excess_dummy_p_97", vars)], aes(cum_returns))
   geom_vline(xintercept = PerformanceAnalytics::Return.cumulative(indicators$returns), color = "red") +
   facet_grid(cols = vars(vars))
 
-ggplot(cum_returns_dt, aes(x = sma_width, y = threshold, fill = cum_returns)) +
-  geom_tile()
-ggplot(cum_returns_dt[sma_width %in% 1:10 & grepl("excess_p_97", vars)],
-       aes(x = sma_width, y = threshold, fill = cum_returns)) +
-  geom_tile() +
-  facet_grid(cols = vars(vars))
-
-
-g1 <- ggplot(indicators, aes(x = time)) +
-  geom_line(aes(y = sum_excess_dummy_p_95_2year)) +
-  geom_line(aes(y = close), color = "red")
-g2 <- ggplot(indicators, aes(x = date)) +
-  geom_line(aes(y = sum_excess_p_999_2year)) +
-  geom_line(aes(y = close /100), color = "red") +
-  scale_y_continuous(limit = c(-10, 10))
-g1 / g2
-
-ggplot(indicators, aes(x = date)) +
-  # geom_line(aes(y = sum_excess_dummy_p_999_4year)) +
-  geom_line(aes(y = close), color = "red")
-  # geom_line(aes(y = SMA(sum_excess_dummy_p_999_4year, 30)), color = "blue")
-ggplot(indicators[date %between% GFC], aes(x = date)) +
-  geom_line(aes(y = sum_excess_dummy_p_999_2year)) +
-  geom_line(aes(y = close), color = "red")
-
-
-ggplot(indicators, aes(x = date, y = sum_excess_dummy_p_99_2year)) +
-  geom_line()
-
-
 # plots
+# returns
 ggplot(cum_returns_dt, aes(cum_returns)) +
   geom_histogram() +
   geom_vline(xintercept = PerformanceAnalytics::Return.cumulative(indicators$returns), color = "red")
-
-
 ggplot(cum_returns_dt[sma_width %in% 1:10 & grepl("excess_p_999", vars)], aes(cum_returns)) +
   geom_histogram() +
   geom_vline(xintercept = PerformanceAnalytics::Return.cumulative(indicators$returns), color = "red") +
   facet_grid(cols = vars(vars))
-
-
-
 ggplot(cum_returns_dt, aes(x = sma_width, y = threshold, fill = cum_returns)) +
   geom_tile()
 ggplot(cum_returns_dt[sma_width %in% 1:10 & grepl("excess_p_97", vars)],
@@ -485,16 +457,6 @@ ggplot(cum_returns_dt[vars == best_var],
        aes(x = sma_width, y = threshold, fill = cum_returns)) +
   geom_tile() +
   facet_grid(cols = vars(vars))
-
-
-# plots rsi
-ggplot(cum_returns_rsi_dt, aes(cum_returns)) +
-  geom_histogram() +
-  geom_vline(xintercept = PerformanceAnalytics::Return.cumulative(indicators$returns), color = "red")
-ggplot(cum_returns_rsi_dt, aes(x = rsi_width, y = threshold, fill = cum_returns)) +
-  geom_tile()
-ggplot(cum_returns_rsi_dt[rsi_width %in% 46:54], aes(x = rsi_width, y = threshold, fill = cum_returns)) +
-  geom_tile()
 
 # plots for dummies
 ggplot(cum_returns_dummy, aes(cum_returns)) +
@@ -558,55 +520,86 @@ storage_upload(cont, file_name, basename(file_name))
 
 
 # IMPORTANT FEATURES ------------------------------------------------------
-#
+# extract important features with gausscov package
+library(gausscov)
 
+# define feature matrix
+cols_keep <- c(colnames(indicators)[2:(ncol(indicators)-3)], "returns")
+X <- as.matrix(na.omit(indicators[, ..cols_keep]))
+dim(X)
 
+# f1st
+f1st_fi_ <- f1st(X[, ncol(X)], X[, -ncol(X)], kmn = 20, sub = TRUE)
+cov_index_f1st_ <- colnames(X[, -ncol(X)])[f1st_fi_[[1]][, 1]]
+
+# f3st_1
+f3st_1_ <- f3st(X[, ncol(X)], X[, -ncol(X)], kmn = 20, m = 1)
+cov_index_f3st_1 <- unique(as.integer(f3st_1_[[1]][1, ]))[-1]
+cov_index_f3st_1 <- cov_index_f3st_1[cov_index_f3st_1 != 0]
+cov_index_f3st_1 <- colnames(X[, -ncol(X)])[cov_index_f3st_1]
+
+# f3st_1 m=2
+f3st_2_ <- f3st(X[, ncol(X)], X[, -ncol(X)], kmn = 20, m = 2)
+cov_index_f3st_2 <- unique(as.integer(f3st_2_[[1]][1, ]))[-1]
+cov_index_f3st_2 <- cov_index_f3st_2[cov_index_f3st_2 != 0]
+cov_index_f3st_2 <- colnames(X[, -ncol(X)])[cov_index_f3st_2]
+
+# f3st_1 m=3
+# f3st_3_ <- f3st(X[, ncol(X)], X[, -ncol(X)], kmn = 20, m = 3)
+# cov_index_f3st_3_ <- unique(as.integer(f3st_3_[[1]][1, ]))[-1]
+# cov_index_f3st_3 <- cov_index_f3st_3[cov_index_f3st_3 != 0]
+# cov_index_f3st_3 <- colnames(X[, -ncol(X)])[cov_index_f3st_3]
+
+# best variables
+predictors <- cov_index_f3st_2[1:5]
+
+# correlation of best predictors
+plot(na.omit(indicators[, ..predictors][, 1][[1]]))
+plot(na.omit(indicators[, ..predictors][, 2][[1]]))
+plot(na.omit(indicators[, ..predictors][, 3][[1]]))
+plot(na.omit(indicators[, ..predictors][, 4][[1]]))
+plot(na.omit(indicators[, ..predictors][, 5][[1]]))
+cor(as.matrix(indicators[, ..predictors]))
 
 # VAR
 library(vars)
-keep_cols_var <- colnames(indicators)[grepl("sd_excess_dum.*2ye", colnames(indicators))]
-keep_cols_var <- c("datetime", "returns", keep_cols_var)
+keep_cols_var <- c("time", "returns", predictors)
 X <- indicators[, ..keep_cols_var]
 X <- na.omit(X)
-# X <- X[datetime %between% c("2015-01-01", "2020-02-26")]
-# X <- as.xts.data.table(X)
-# res <- VAR(as.xts.data.table(X[1:1000]), p = 8, type = "both")
-# preds <- predict(res, n.ahead = 8, ci = 0.95)
-# p <- preds$fcst$returns
-
 
 # predictions for every period
+library(runner)
 roll_var <- runner(
   x = X,
   f = function(x) {
-    res <- VAR(as.xts.data.table(x), p = 8, type = "both")
-    p <- predict(res, n.ahead = 8, ci = 0.95)
+    res <- VAR(as.xts.data.table(x), p = 2, type = "both")
+    p <- predict(res, n.ahead = 4, ci = 0.95)
     p <- p$fcst$returns
     data.frame(first = p[1, 1], median = median(p[, 1]), mean = mean(p[, 1]), sd = sd(p[, 1]), min = min(p[, 1]))
   },
-  k = 1500,
+  k = 2000,
   lag = 0L,
   na_pad = TRUE
 )
 predictions_var <- lapply(roll_var, as.data.table)
 predictions_var <- rbindlist(predictions_var, fill = TRUE)
 predictions_var[, V1 := NULL]
-predictions_var <- cbind(datetime = X[, datetime], predictions_var)
-predictions_var <- merge(spy, predictions_var, by = "datetime", all.x = TRUE, all.y = FALSE)
+predictions_var <- cbind(time = X[, time], predictions_var)
+predictions_var <- merge(spy, predictions_var, by = "time", all.x = TRUE, all.y = FALSE)
 predictions_var <- na.omit(predictions_var)
 tail(predictions_var, 10)
 
 # backtest apply
 Return.cumulative(predictions_var$returns)
-backtest(predictions_var$returns, predictions_var$first, -0.005)
-backtest(predictions_var$returns, predictions_var$median, -0.003)
-backtest(predictions_var$returns, predictions_var$mean, -0.005)
-backtest(predictions_var$returns, predictions_var$min, -0.04)
-backtest_dummy(predictions_var$returns, predictions_var$sd, 0.002)
+backtest(predictions_var$returns, predictions_var$first, -0.0001)
+backtest(predictions_var$returns, predictions_var$median, -0.0001)
+backtest(predictions_var$returns, predictions_var$mean, -0.0001)
+backtest(predictions_var$returns, predictions_var$min, -0.004)
+backtest_dummy(predictions_var$returns, predictions_var$sd, 0.001)
 x <- backtest(predictions_var$returns, predictions_var$first, -0.006, FALSE)
-charts.PerformanceSummary(as.xts(cbind(predictions_var$returns, x), order.by = predictions_var$datetime))
-x <- backtest_dummy(predictions_var$returns, predictions_var$sd, 0.002, FALSE)
-charts.PerformanceSummary(as.xts(cbind(predictions_var$returns, x), order.by = predictions_var$datetime))
+charts.PerformanceSummary(as.xts(cbind(predictions_var$returns, x), order.by = predictions_var$time))
+x <- backtest_dummy(predictions_var$returns, predictions_var$sd, 0.001, FALSE)
+charts.PerformanceSummary(as.xts(cbind(predictions_var$returns, x), order.by = predictions_var$time))
 
 
 
@@ -958,4 +951,20 @@ PerformanceAnalytics::charts.PerformanceSummary(X_test_predictions)
 
 
 
+# TEST API ----------------------------------------------------------------
+library(httr)
+library(jsonlite)
+
+y1_train <- rnorm(500)
+y2_train <- rnorm(500)
+y1_test <- rnorm(500)
+y2_test <- rnorm(500)
+p <- POST("http://127.0.0.1:8000/pairs",
+          body = list(y1_train = toJSON(y1_train),
+                      y2_train = toJSON(y2_train),
+                      y1_test = toJSON(y1_test),
+                      y2_test = toJSON(y2_test)))
+p
+x <- content(p)
+x
 

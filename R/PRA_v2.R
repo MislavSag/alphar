@@ -16,8 +16,17 @@ library(AzureStor)
 # PARAMETERS
 windows = c(8 * 5, 8 * 22, 8 * 22 * 3, 8 * 22 * 6,  8 * 22 * 12, 8 * 22 * 12 * 2)
 
+# creds for tiledb
+config <- tiledb_config()
+config["vfs.s3.aws_access_key_id"] <- Sys.getenv("AWS-ACCESS-KEY")
+config["vfs.s3.aws_secret_access_key"] <- Sys.getenv("AWS-SECRET-KEY")
+config["vfs.s3.region"] <- Sys.getenv("AWS-REGION")
+ctx <- tiledb_ctx(config)
+
 # import data
-arr <- tiledb_array("D:/equity-usa-hour-fmpcloud-adjusted")
+arr <- tiledb_array("D:/equity-usa-hour-fmpcloud-adjusted",
+                    as.data.frame = TRUE,
+                    query_layout = "UNORDERED")
 system.time(hour_data_raw <- arr[])
 tiledb_array_close(arr)
 hour_data_raw <- as.data.table(hour_data_raw)
@@ -56,7 +65,20 @@ close_data <- hour_data[, .(symbol, time, close)]
 cols <- paste0("pr_", windows)
 close_data[, (cols) := lapply(windows, function(w) roll_percent_rank(close, w)), by = "symbol"]
 
+# save PRA data to tiledb
 # fwrite(close_data, "D:/risks/pra/pra_raw.csv", dateTimeAs = "write.csv")
+# close_data_save <- copy(close_data)
+# close_data_save[, time := with_tz(time, tzone = "UTC")]
+# fromDataFrame(
+#   obj = close_data_save,
+#   uri = "s3://equity-usa-features-pra",
+#   col_index = c("symbol", "time"),
+#   sparse = TRUE,
+#   tile_domain=list(time=c(as.POSIXct("1970-01-01 00:00:00", tz = "UTC"),
+#                           as.POSIXct("2099-12-31 23:59:59", tz = "UTC"))),
+#   allows_dups = FALSE
+# )
+
 # IMPORT
 # close_data <- fread("D:/risks/pra/pra_raw.csv")
 # close_data$datetime <- as.POSIXct(as.numeric(close_data$datetime),

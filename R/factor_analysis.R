@@ -2,7 +2,6 @@ library(data.table) # fundamental
 library(dplyr)      # fundamental
 library(ggplot2)    # fundamental
 library(lubridate)  # easy work with dates and time
-library(simfinapi)  # fundamental and dailymarket data
 library(quantmod)   # quant usefull functions
 library(janitor)    # for cleaning column names
 library(naniar)     # handling missing values
