@@ -478,8 +478,9 @@ start_date <- start_date_test  - (365 * 3)
 arr <- tiledb_array("D:/equity-usa-daily-fmp",
                     as.data.frame = TRUE,
                     query_layout = "UNORDERED",
-                    selected_ranges = list(date = cbind(start_date, Sys.Date()),
-                                           symbol = cbind(symbols, symbols))
+                    selected_ranges = list(symbol = cbind(symbols, symbols))
+                    # selected_ranges = list(date = cbind(start_date, Sys.Date()),
+                                           # symbol = cbind(symbols, symbols))
 )
 system.time(prices_new <- arr[])
 tiledb_array_close(arr)
@@ -646,7 +647,13 @@ train_start <- test_period_start - (365 * 3)
 train_stop <- test_period_start - 1
 
 # find best pairs for every trainset
-best_pairs <- list()
+bl_endp_key <- storage_endpoint(Sys.getenv("BLOB-ENDPOINT-SNP"),
+                                Sys.getenv("BLOB-KEY-SNP"))
+cont <- storage_container(bl_endp_key, "qc-backtest")
+train_start = train_start[which(test_period_start == as.Date("2004-06-01")):length(test_period_start)]
+train_stop = train_stop[which(test_period_start == as.Date("2004-06-01")):length(test_period_start)]
+test_period_start = test_period_start[which(test_period_start == as.Date("2004-06-01")):length(test_period_start)]
+# best_pairs <- list()
 for (i in seq_along(train_start)) {
 
   # sample
@@ -686,7 +693,17 @@ for (i in seq_along(train_start)) {
     results <- cbind(results, metrics)
     pci_tests_i[[j]] <- cbind(results, p_rw = test_pci$p.value[1], p_ar = test_pci$p.value[2])
   }
-  best_pairs[[i]] <- rbindlist(pci_tests_i, fill = TRUE)
+
+  # save to azure for qc
+  best_pairs <- rbindlist(pci_tests_i, fill = TRUE)
+  file_name_ <- paste0(test_period_start[i], ".csv")
+  storage_write_csv(as.data.frame(best_pairs), cont, file_name_)
+  # lapply(seq_along(best_pairs_eligible), function(i) {
+  #   file_name_ <- paste0(names(best_pairs_eligible[i]), ".csv")
+  #   print(file_name_)
+  #   storage_write_csv(as.data.frame(best_pairs_eligible[[i]][, 1:3]), cont, file_name_)
+  # })
+  # best_pairs[[i]] <- rbindlist(pci_tests_i, fill = TRUE)
 }
 
 

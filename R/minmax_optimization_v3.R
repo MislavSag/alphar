@@ -145,10 +145,64 @@ below_sum_cols <- colnames(indicators_sd)[grep("below", colnames(indicators_sd))
 excess_sum_cols <- gsub("above", "excess", above_sum_cols)
 indicators_sd[, (excess_sum_cols) := indicators_sd[, ..above_sum_cols] - indicators_sd[, ..below_sum_cols]]
 
+# help function to caluclate diff summy sum
+get_diff_dummy = function(col = "p_01_year") {
+
+  # get dt and dt lag
+  cols = c("symbol", "time", col)
+  dt = dcast(market_data[, ..cols], time ~ symbol, value.var = col)
+  setorder(dt, "time")
+  dt_lag = dt[, lapply(.SD, function(x) shift(x, 1)), .SDcols = colnames(dt)[2:ncol(dt)]]
+  dt_lag = cbind(dt[, time], dt_lag)
+
+  # get dt diff
+  dt_diff = dt[, 2:ncol(dt)] - dt_lag[, 2:ncol(dt)]
+  dt_diff = cbind(dt[, time], dt_diff)
+
+  # get dt diff dummy
+  cols = colnames(dt_diff)[2:ncol(dt_diff)]
+  dt_diff_dummy = dt_diff[, lapply(.SD, function(x) ifelse(!is.na(x) & x != 0, 1, 0)), .SDcols = cols]
+
+  # get dt diff dummy sum
+  dt_diff_dummy = dt_diff_dummy[, dummy_sum := rowSums(.SD), .SDcols = cols]
+  dt_diff_dummy = cbind(time = dt[, time], dt_diff_dummy)
+  dt_diff_dummy = dt_diff_dummy[, .(dummy_sum)]
+  setnames(dt_diff_dummy, paste0(col, "_", "dummy_sum"))
+
+  return(dt_diff_dummy)
+}
+
+# get diff dummy some for all columns
+cols <- colnames(market_data)[grep("^p_9|^p_0", colnames(market_data))]
+cols_new <- paste0("diff_dummy_", cols)
+indicators_diff_dummy = market_data[, lapply(cols, function(x) get_diff_dummy(x))]
+time_ = sort(unique(market_data[, time]))
+indicators_diff_dummy = cbind(time = time_, indicators_diff_dummy)
+setnames(indicators_diff_dummy, c("time", cols_new))
+
 # merge indicators and spy
 indicators <- merge(indicators, indicators_sd, by = c("time"), all.x = TRUE, all.y = FALSE)
-indicators <- merge(indicators, spy, by = "time")
+indicators <- merge(indicators, indicators_diff_dummy, by = c("time"), all.x = TRUE, all.y = FALSE)
 
+# # get spy data
+# arr <- tiledb_array("D:/equity-usa-hour-fmpcloud-adjusted",
+#                     as.data.frame = TRUE,
+#                     query_layout = "UNORDERED",
+#                     selected_ranges = list(symbol = cbind("SPY", "SPY")))
+# system.time(spy_data <- arr[])
+# tiledb_array_close(arr)
+# spy_dt <- as.data.table(spy_data)
+# spy_dt[, time := as.POSIXct(time, tz = "UTC")]
+# setorder(spy_dt, symbol, time)
+# spy_dt[, time := with_tz(time, tzone = "America/New_York")]
+# spy_dt <- spy_dt[as.ITime(time) %between% c(as.ITime("09:30:00"),
+#                                             as.ITime("16:00:00"))]
+# spy_dt[, returns := close / shift(close) - 1]
+# spy_dt <- na.omit(spy_dt)
+# spy <- spy_dt[, .(time, close, returns)]
+
+# merge spy and indicators
+indicators <- merge(indicators, spy, by = "time")
 
 
 
@@ -162,8 +216,8 @@ ggplot(indicators, aes(x = time)) +
 # visualize for sample predictors
 sample_ = copy(indicators)
 indicators[, .(time, returns, sum_above_p_999_year, sum_below_p_001_year)]
-sample_[, buy := ifelse(shift(sum_above_p_999_year, 1, type = "lag") > 0.4, 1, 0)]
-sample_[, sell := ifelse(shift(sum_below_p_001_year, 1, type = "lag") > 0.4, 1, 0)]
+sample_[, buy := ifelse(shift(sum_above_p_999_year, 1, type = "lag") > 0.8, 1, 0)]
+sample_[, sell := ifelse(shift(sum_below_p_001_year, 1, type = "lag") > 0.8, 1, 0)]
 table(sample_$buy)
 v_buy <- sample_[buy == 1, time, ]
 v_sell <- sample_[sell == 1, time, ]
@@ -171,19 +225,19 @@ ggplot(sample_, aes(x = time)) +
   geom_line(aes(y = close)) +
   geom_vline(xintercept = v_buy, color = "green") +
   geom_vline(xintercept = v_sell, color = "red")
-ggplot(sample_[date %between% GFC], aes(x = date)) +
+ggplot(sample_[time %between% GFC], aes(x = time)) +
   geom_line(aes(y = close)) +
   geom_vline(xintercept = v_buy, color = "green") +
   geom_vline(xintercept = v_sell, color = "red")
-ggplot(sample_[date %between% COVID], aes(x = date)) +
+ggplot(sample_[time %between% COVID], aes(x = time)) +
   geom_line(aes(y = close)) +
   geom_vline(xintercept = v_buy, color = "green") +
   geom_vline(xintercept = v_sell, color = "red")
-ggplot(sample_[date %between% AFTER_COVID], aes(x = date)) +
+ggplot(sample_[time %between% AFTER_COVID], aes(x = time)) +
   geom_line(aes(y = close)) +
   geom_vline(xintercept = v_buy, color = "green") +
   geom_vline(xintercept = v_sell, color = "red")
-ggplot(sample_[date %between% NEW], aes(x = date)) +
+ggplot(sample_[time %between% NEW], aes(x = time)) +
   geom_line(aes(y = close)) +
   geom_vline(xintercept = v_buy, color = "green") +
   geom_vline(xintercept = v_sell, color = "red")
@@ -218,6 +272,14 @@ ggplot(sample_[date %between% GFC], aes(x = date)) +
   geom_vline(xintercept = v_buy, color = "green") +
   geom_vline(xintercept = v_sell, color = "red")
 
+# visualiye diff dummy
+ggplot(indicators_diff_dummy, aes(x = time, y =  diff_dummy_p_001_2year)) +
+  geom_line()
+ggplot(indicators_diff_dummy, aes(x = time, y = SMA(diff_dummy_p_001_2year, 15))) +
+  geom_line()
+ggplot(indicators_diff_dummy[30000:32000], aes(x = time, y = SMA(diff_dummy_p_001_2year, 15))) +
+  geom_line()
+
 
 
 # OPTIMIZE STRATEGY -------------------------------------------------------
@@ -247,6 +309,14 @@ vars <- colnames(indicators)[grep("sd_excess_dumm", colnames(indicators))]
 paramset_dummy_sd <- expand.grid(sma_width, threshold, vars, stringsAsFactors = FALSE)
 colnames(paramset_dummy_sd) <- c("sma_width", 'threshold', "vars")
 
+# params for dummy diff
+sma_width <- 1:50
+threshold <- 1:200
+vars <- colnames(indicators)[grep("diff_dummy_p_0", colnames(indicators))]
+paramset <- expand.grid(sma_width, threshold, vars, stringsAsFactors = FALSE)
+colnames(paramset) <- c('sma_width', 'threshold', "vars")
+
+
 
 # backtst function
 backtest <- function(returns, indicator, threshold, return_cumulative = TRUE) {
@@ -254,7 +324,7 @@ backtest <- function(returns, indicator, threshold, return_cumulative = TRUE) {
   for (i in seq_along(sides)) {
     if (i %in% c(1) || is.na(indicator[i-1])) {
       sides[i] <- NA
-    } else if (indicator[i-1] < threshold) {
+    } else if (indicator[i-1] > threshold) {
       sides[i] <- 0
     } else {
       sides[i] <- 1
@@ -278,7 +348,7 @@ Rcpp::cppFunction("
     for(int i=0; i<n; i++){
       if(i==0 || R_IsNA(indicator[i-1])) {
         sides[i] = 1;
-      } else if(indicator[i-1] < threshold){
+      } else if(indicator[i-1] > threshold){
         sides[i] = 0;
       } else {
         sides[i] = 1;
@@ -366,6 +436,19 @@ setorder(cum_returns_dummy_dt, cum_returns)
 # cum_returns_sd_dt <- cum_returns_sd(paramset_dummy_sd)
 # setorder(cum_returns_sd_dt, cum_returns)
 
+# backtest diff dummy
+cum_returns_f <- function(paramset) {
+  cum_returns <- vapply(1:nrow(paramset), function(x) {
+    excess_sma <- SMA(indicators[, get(paramset[x, 3])], paramset[x, 1])
+    results <- backtest_cpp(indicators$returns, excess_sma, paramset[x, 2])
+    return(results)
+  }, numeric(1))
+  results <- as.data.table(cbind(paramset, cum_returns))
+}
+cum_returns_dt <- cum_returns_f(paramset)
+setorder(cum_returns_dt, cum_returns)
+
+
 # n best
 head(cum_returns_dt, 50)
 tail(cum_returns_dt, 100)
@@ -404,17 +487,17 @@ ggplot(cum_returns_dummy_dt[grepl("excess_dummy_p_97", vars)], aes(cum_returns))
 ggplot(cum_returns_dt, aes(cum_returns)) +
   geom_histogram() +
   geom_vline(xintercept = PerformanceAnalytics::Return.cumulative(indicators$returns), color = "red")
-ggplot(cum_returns_dt[sma_width %in% 1:10 & grepl("excess_p_999", vars)], aes(cum_returns)) +
+ggplot(cum_returns_dt[sma_width %in% 1:10 & grepl("diff_dummy_p_03", vars)], aes(cum_returns)) +
   geom_histogram() +
   geom_vline(xintercept = PerformanceAnalytics::Return.cumulative(indicators$returns), color = "red") +
   facet_grid(cols = vars(vars))
 ggplot(cum_returns_dt, aes(x = sma_width, y = threshold, fill = cum_returns)) +
   geom_tile()
-ggplot(cum_returns_dt[sma_width %in% 1:10 & grepl("excess_p_97", vars)],
+ggplot(cum_returns_dt[sma_width %in% 1:10 & grepl("diff_dummy_p_03", vars)],
        aes(x = sma_width, y = threshold, fill = cum_returns)) +
   geom_tile() +
   facet_grid(cols = vars(vars))
-ggplot(cum_returns_dt[sma_width %in% 1:10 & grepl("excess_p_95", vars)],
+ggplot(cum_returns_dt[sma_width %in% 1:10 & grepl("diff_dummy_p_01", vars)],
        aes(x = sma_width, y = threshold, fill = cum_returns)) +
   geom_tile() +
   facet_grid(cols = vars(vars))
@@ -438,7 +521,7 @@ ggplot(cum_returns_dt[sma_width %in% 1:10 & threshold %between% c(-0.01, -0.001)
   geom_tile()
 
 # best vriable
-best_var <- "sum_excess_p_999_year"
+best_var <- "diff_dummy_p_03_year"
 ggplot(cum_returns_dt[vars == best_var], aes(cum_returns)) +
   geom_histogram() +
   geom_vline(xintercept = PerformanceAnalytics::Return.cumulative(indicators$returns), color = "red")
@@ -448,8 +531,8 @@ ggplot(cum_returns_dt[vars == best_var],
   facet_grid(cols = vars(vars))
 
 # best var and sma width
-best_var <- "sum_excess_p_999_year"
-sma_width_best <- 42
+best_var <- "diff_dummy_p_03_year"
+sma_width_best <- 6
 ggplot(cum_returns_dt[vars == best_var & sma_width == sma_width_best], aes(cum_returns)) +
   geom_histogram() +
   geom_vline(xintercept = PerformanceAnalytics::Return.cumulative(indicators$returns), color = "red")
@@ -464,14 +547,45 @@ ggplot(cum_returns_dummy, aes(cum_returns)) +
   geom_vline(xintercept = PerformanceAnalytics::Return.cumulative(indicators$returns), color = "red")
 
 # best backtest
-sma_width_param <- 50
-threshold_param <- 0
-vars_param <- "sum_excess_p_999_2year"
+sma_width_param <- 6
+threshold_param <- 20
+vars_param <- "diff_dummy_p_03_year"
 excess_sma <- SMA(indicators[, get(vars_param)], sma_width_param)
 strategy_returns <- backtest(indicators$returns, excess_sma, threshold_param, return_cumulative = FALSE)
-charts.PerformanceSummary(xts(cbind(indicators$returns, strategy_returns), order.by = indicators$date))
+charts.PerformanceSummary(xts(cbind(indicators$returns, strategy_returns), order.by = indicators$time))
 charts.PerformanceSummary(xts(cbind(indicators$returns[30000:nrow(indicators)], strategy_returns[30000:nrow(indicators)]),
                               order.by = indicators$date[30000:nrow(indicators)]))
+
+# add negatibe trend condition
+backtest <- function(returns, indicator, threshold, return_cumulative = TRUE) {
+  sides <- vector("integer", length(indicator))
+  for (i in seq_along(sides)) {
+    # print(i)
+    if (i %in% c(1:35) || is.na(indicator[i-1]) || is.na(returns[i-35])) {
+      sides[i] <- NA
+    } else if (indicator[i-1] > threshold & (returns[i-1] > 0)) { # & ((returns[i-1] / returns[i-35] - 1) < 0)
+      sides[i] <- 0
+    } else {
+      sides[i] <- 1
+    }
+  }
+  sides <- ifelse(is.na(sides), 1, sides)
+  returns_strategy <- returns * sides
+  if (return_cumulative) {
+    return(PerformanceAnalytics::Return.cumulative(returns_strategy))
+  } else {
+    return(returns_strategy)
+  }
+}
+sma_width_param <- 6
+threshold_param <- 10
+vars_param <- "diff_dummy_p_03_year"
+excess_sma <- SMA(indicators[, get(vars_param)], sma_width_param)
+strategy_returns <- backtest(indicators$returns, excess_sma, threshold_param, return_cumulative = FALSE)
+charts.PerformanceSummary(xts(cbind(indicators$returns, strategy_returns), order.by = indicators$time))
+charts.PerformanceSummary(xts(cbind(indicators$returns[30000:nrow(indicators)], strategy_returns[30000:nrow(indicators)]),
+                              order.by = indicators$date[30000:nrow(indicators)]))
+
 
 # best backtest for dummy
 threshold_param <- 3

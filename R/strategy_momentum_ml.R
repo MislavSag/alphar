@@ -9,6 +9,7 @@ library(checkmate)
 library(httr)
 library(findata)
 library(qlcal)
+library(PerformanceAnalytics)
 
 
 
@@ -55,20 +56,27 @@ profiles <- profiles[country == "US"]
 setnames(profiles, tolower(colnames(profiles)))
 
 # sp500 historical universe
-url <- "https://financialmodelingprep.com/api/v3/historical/sp500_constituent?apikey=15cd5d0adf4bc6805a724b4417bbaafc"
-p <- GET(url)
+p <- GET("https://financialmodelingprep.com/api/v3/historical/sp500_constituent?apikey=15cd5d0adf4bc6805a724b4417bbaafc")
 res <- content(p)
-sp500 <- rbindlist(res)
-sp500_symbols <- c(sp500[, symbol], sp500[, removedTicker])
+sp500_history <- rbindlist(res)
+p <- GET("https://financialmodelingprep.com/api/v3/sp500_constituent?apikey=15cd5d0adf4bc6805a724b4417bbaafc")
+res <- content(p)
+sp500_current <- rbindlist(res)
+sp500_symbols <- c(sp500_history[, symbol],
+                   sp500_history[, removedTicker],
+                   sp500_current$symbol)
 sp500_symbols <- sp500_symbols[sp500_symbols != ""]
+sp500_symbols <- unique(sp500_symbols)
+# sp500_symbols = sp500_symbols[1:200]  # REMOVE THIS LATER
 
 
 
-# MARKET DATA -------------------------------------------------------------
+# DAILY MARKET DATA -------------------------------------------------------
 # import market data (choose frequency)
 arr <- tiledb_array("D:/equity-usa-daily-fmp",
                     as.data.frame = TRUE,
-                    query_layout = "UNORDERED"
+                    query_layout = "UNORDERED",
+                    selected_ranges = list(symbol = cbind(sp500_symbols, sp500_symbols))
 )
 system.time(prices <- arr[])
 tiledb_array_close(arr)
@@ -86,33 +94,63 @@ setkey(prices_dt, date)
 prices_dt <- prices_dt[.(as.IDate(trading_days))]
 setkey(prices_dt, NULL)
 
-# clean daily prices
+# remove observations with measurement errors
 prices_dt <- prices_dt[open > 0 & high > 0 & low > 0 & close > 0 & adjClose > 0] # remove rows with zero and negative prices
+
+# order data
 setorder(prices_dt, "symbol", "date")
+
+# adjuset all prices, not just close
 prices_dt[, returns := adjClose / shift(adjClose) - 1, by = symbol] # calculate returns
 prices_dt <- prices_dt[returns < 1] # TODO:: better outlier detection mechanism. For now, remove daily returns above 100%
 adjust_cols <- c("open", "high", "low")
 prices_dt[, (adjust_cols) := lapply(.SD, function(x) x * (adjClose / close)), .SDcols = adjust_cols] # adjust open, high and low prices
 prices_dt[, close := adjClose]
+
+# remove missing values
 prices_dt <- na.omit(prices_dt[, .(symbol, date, open, high, low, close, volume, returns)])
+
+# remove symobls with < 252 observations
 prices_n <- prices_dt[, .N, by = symbol]
 prices_n <- prices_n[N > 252]  # remove prices with only 700 or less observations
 prices_dt <- prices_dt[symbol %in% prices_n[, symbol]]
 
-# save SPY for later and keep only events symbols
-spy <- prices_dt[symbol == "SPY"]
-setorder(spy, date)
-
-
 
 
 # PREPARE DATA  -----------------------------------------------------------
-# monthly data
+# create yearly returns
+prices_dt[, mom12 := close  / shift(close, n = 252) - 1, by = c("symbol")]
+prices_dt[, mom6 := close  / shift(close, n = 126) - 1, by = c("symbol")]
+prices_dt[, mom3 := close  / shift(close, n = 66) - 1, by = c("symbol")]
+prices_dt[, mom1 := close  / shift(close, n = 22) - 1, by = c("symbol")]
 
+# calculate monthly returns
+prices_dt[, year_month := paste0(data.table::year(date), "-",
+                                 data.table::month(date))]
+prices_dt[, monthly_return := tail(close, 1) / head(close, 1) - 1, by = c("symbol", "year_month")]
+prices_dt[, monthly_return_roll := shift(close, -22) / close - 1]
 
-# create one month returns
-prices_dt[, ret_month := shift(close)]
+# checks
+prices_dt[symbol == "ABMD", ][1:30]
+29.25000 / 17.81250 - 1
+
+# filter 50 (10%) stocks with highest momentum on the beginning of the month
+prices_dt_filter <- prices_dt[, head(.SD, 1), by = c("symbol", "year_month")]
 
 # calculate momentum
+momentum_stocks <- na.omit(prices_dt_filter, cols = "mom12")
+setorderv(momentum_stocks, c("year_month", "mom12"))
+momentum_stocks <- momentum_stocks[, tail(.SD, 10), by = year_month]
 
+# crate equity curve
+portfolio = momentum_stocks[, .(symbol, date, monthly_return)]
+portfolio = dcast(portfolio, date~symbol, value.var = "monthly_return")
+portfolio_weigts = as.xts.data.table(portfolio)
+portfolio_weigts[!is.na(portfolio_weigts)] <- 0.1
+portfolio_weigts[is.na(portfolio_weigts)] = 0
+portfolio_ret = Return.portfolio(as.xts.data.table(portfolio),
+                                 weights = portfolio_weigts,
+                                 rebalance_on="months")
 
+# vis results
+charts.PerformanceSummary(portfolio_ret)

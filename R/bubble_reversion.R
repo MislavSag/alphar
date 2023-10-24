@@ -68,7 +68,7 @@ exuber_dt[, radf_sum := adf_log + sadf_log + gsadf_log + badf_log + bsadf_log]
 df <- na.omit(exuber_dt)
 df[, bubble := radf_sum > 5 & radf_sum < 20]
 df[, .N, by = bubble]
-symbol_ = "TSLA"
+symbol_ = "AAPL"
 df_ <- df[symbol == symbol_]
 ggplot(df_, aes(x = time)) +
   geom_line(aes(y = close)) +
@@ -109,7 +109,8 @@ ggplot(df_, aes(x = time)) +
 
 # identify collapse
 df[, momentum := close / shift(close, 7 * 22 * 2) - 1, by = symbol]
-df[exuberance == TRUE & momentum < 0, collapse := TRUE]
+# IMPORTNAT NOTE: for collapse momentum < 0, for bubble > 0
+df[exuberance == TRUE & momentum > 0, collapse := TRUE]
 
 # inspect collapses
 symbol_ = "DXCM"
@@ -119,7 +120,7 @@ ggplot(df_, aes(x = time)) +
   geom_line(aes(y = close)) +
   geom_point(data = close_, aes(y = close), color = "red")
 
-# if thereis collapse on rolling window
+# if there is collapse on rolling window
 df[, collapse_roll := frollapply(collapse, 7 * 30, function(x) any(x == TRUE)), by = symbol]
 
 # inspect collapse roll
@@ -151,21 +152,23 @@ df[collapse_slow_roll == TRUE]
 df[collapse_slow_roll == TRUE & shift(collapse_slow, -1) == TRUE, collapse_slow_first := TRUE]
 
 # inspect
-symbol_ = "ANR"
+symbol_ = "EIX"
 df_ <- df[symbol == symbol_]
 close_ = df_[collapse_roll == TRUE, .(time, close)]
+close_[, date := as.IDate(time)]
 close_slow_first = df_[collapse_slow_first == TRUE, .(time, close)]
 ggplot(df_, aes(x = time)) +
   geom_line(aes(y = close)) +
   geom_point(data = close_, aes(y = close), color = "red", size = 0.8) +
   geom_point(data = close_slow_first, aes(y = close), color = "blue", size = 2)
-dates_ = c("2014-05-01", "2015-03-01")
+dates_ = c(as.IDate("2017-11-01"), as.IDate("2018-01-30"))
 ggplot(df_[time %between% dates_], aes(x = time)) +
   geom_line(aes(y = close)) +
-  geom_point(data = close_[time %between% dates_], aes(y = close), color = "red", size = 0.8) +
-  geom_point(data = close_slow_first[time %between% dates_], aes(y = close), color = "blue", size = 2)
+  geom_point(data = close_[date %between% dates_], aes(y = close), color = "red", size = 0.8) +
+  geom_point(data = close_slow_first[as.IDate(time) %between% dates_], aes(y = close), color = "blue", size = 2)
 
 
+close_[date > as.IDate("2016-11-01")]
 
 # OLD WAY
 # df[, collapse_slow_first := frollapply(collapse_slow, 7 * 5, function(x) {

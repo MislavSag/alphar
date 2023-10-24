@@ -17,7 +17,7 @@ cpi_l <- lapply(cpi_items_chunks, function(chunk) {
   Sys.sleep(1L)
   cpi <- bls_api(chunk,
                  startyear = 2004,
-                 endyear = 2022,
+                 endyear = format.Date(Sys.Date(), "%Y"),
                  Sys.getenv("BLS_KEY"),
                  calculations = TRUE,
                  annualaverage = TRUE,
@@ -73,6 +73,7 @@ cols_rearange <- c("release_date", "date", colnames(cpi_sample)[2:(ncol(cpi_samp
 cpi_sample <- cpi_sample[, ..cols_rearange]
 cols_arrange <- c("release_date", "date", items_keep)
 cpi_sample <- cpi_sample[, ..cols_arrange]
+cpi_sample <- unique(cpi_sample, by = c("release_date"))
 
 # save to azure blob
 cpi_qc <- copy(cpi_sample)
