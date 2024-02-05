@@ -51,6 +51,7 @@ get_sec = function(symbol) {
   data_ = data_[, .(date = Date, close = `Adj Close`)]
   data_[, returns := close / shift(close) - 1]
   data_ = na.omit(data_)
+  dbDisconnect(con)
   return(data_)
 }
 spy = get_sec("spy")
@@ -199,7 +200,7 @@ plot(as.xts.data.table(fred_dt_extreme[, .N, by = date][order(date)][date > as.D
 # PREPARE DATA FOR MODELING -----------------------------------------------
 # optional - keep only series with break
 # fred_dt[, length(unique(series_id))]
-# series_break = fred_dt[, .(any_break = any(zscore_4 == 1, na.rm = TRUE)), by = series_id]
+# series_break = fred_dt[, .(any_break = any(zscore_3 == 1, na.rm = TRUE)), by = series_id]
 # nrow(series_break[any_break == TRUE]) / nrow(series_break) * 100
 # fred_dt_sample = fred_dt[series_id %in% series_break[any_break == TRUE, series_id]]
 # nrow(fred_dt) # 6.931.388
@@ -208,7 +209,7 @@ plot(as.xts.data.table(fred_dt_extreme[, .N, by = date][order(date)][date > as.D
 # fred_dt_sample = na.omit(fred_dt_sample)
 
 # alternative to above - keep all series
-fred_dt_sample = na.omit(fred_dt)
+fred_dt_sample = fred_dt[popularity > 30]
 
 # check for duplicates
 date_series = fred_dt_sample[, .N, by = .(date, series_id)]
@@ -217,24 +218,20 @@ fred_dt_sample = unique(fred_dt_sample,
                         by = c("series_id", "date"))
 fred_dt_sample[series_id == "GDP"]
 
-# lag all variables - IMPORTANT !
-setorder(fred_dt_sample, series_id, date)
-vars_shift = c("value", "value_diff", "zscore_roll", "zscore_3", "zscore_4", "zscore_5")
-vars_shift_ = c("series_id", "date", vars_shift)
-fred_dt_sample[series_id == "GDP", ..vars_shift_]
-fred_dt_sample[, (vars_shift) := lapply(.SD, shift),
-               by = .(series_id),
-               .SDcols = vars_shift]
-fred_dt_sample[series_id == "GDP", ..vars_shift_]
-fred_dt_sample = na.omit(fred_dt_sample)
-
-# convert anomalies to binary predictors
-fred_dt_sample = dcast(fred_dt_sample[, .(date, series_id, zscore_4)],
+# reshape - variables to columns
+fred_dt_sample = dcast(fred_dt_sample[, .(date, series_id, zscore_3)],
                        date ~ series_id,
-                       value.var = "zscore_4")
+                       value.var = "zscore_3")
+setorder(fred_dt_sample, date)
+fred_dt_sample[1:10, 1:10]
+
+# locf vars
 predictors = colnames(fred_dt_sample)[2:ncol(fred_dt_sample)]
-fred_dt_sample = fred_dt_sample[, (predictors) := lapply(.SD, nafill, type = "locf"),
-                                .SDcols = predictors]
+fred_dt_sample[, (predictors) := lapply(.SD, nafill, type = "locf"), .SDcols = predictors]
+
+# lag all variables - IMPORTANT !
+fred_dt_sample[, (predictors) := lapply(.SD, shift), .SDcols = predictors]
+# fred_dt_sample = na.omit(fred_dt_sample)
 
 # add target variable
 DT = fred_dt_sample[spy[, .(date, close)], on = "date"]
@@ -251,10 +248,9 @@ DT[, `:=`(
 
 # agggregate extremes
 total_extremes = rowSums(DT[, 3:(ncol(DT)-5)], na.rm = TRUE)
-total_non_nas = apply(DT[, 3:(ncol(DT)-5)], MARGIN = 1, FUN = function(x) sum(!is.na(x)))
+total_non_nas = rowSums(!is.na(DT[, 3:(ncol(DT)-5)]))
 total_extremes_sd = apply(DT[, 3:(ncol(DT)-5)], MARGIN = 1, FUN = function(x) sd(x, na.rm = TRUE))
-plot(total_non_nas)
-total_extremes = as.data.table(
+total_extremes_dt = as.data.table(
   cbind.data.frame(
     date = DT$date,
     ext = total_extremes,
@@ -262,27 +258,32 @@ total_extremes = as.data.table(
     ext_sd = total_extremes_sd
   )
 )
-plot(as.xts.data.table(total_extremes[, .(date, ext)]))
-plot(as.xts.data.table(total_extremes[, .(date, ext_ratio)]), main = "Ext Ratio")
-plot(as.xts.data.table(total_extremes[, .(date, ext_sd)]), main = "Ext Sd")
+plot(as.xts.data.table(total_extremes_dt[, .(date, ext)]))
+plot(as.xts.data.table(total_extremes_dt[, .(date, ext_ratio)]), main = "Ext Ratio")
+plot(as.xts.data.table(total_extremes_dt[, .(date, ext_ratio - shift(ext_ratio))]), main = "Ext Ratio Diff")
+plot(as.xts.data.table(total_extremes_dt[, .(date, ext_sd)]), main = "Ext Sd")
+plot(as.xts.data.table(total_extremes_dt[, .(date, ext_sd - shift(ext_sd))]), main = "Ext Sd Diff")
+
+# library(kcpRS)
 
 # simple fast backtest
-backtest_data = as.data.table(cbind.data.frame(total_extremes, close = DT$close))
+backtest_data = as.data.table(cbind.data.frame(total_extremes_dt, close = DT$close))
 backtest_data[, returns := close / shift(close, 1) - 1]
 backtest_data = na.omit(backtest_data)
-backtset_by_threshold = function(dt, threshold = 0.1) {
-  dt[, sign := ifelse(ext_sd > threshold, 0, 1)]
-  dt[is.na(sign), sign := 1]
-  dt[, strategy := returns * shift(sign)]
-  dt = na.omit(dt)
-  dt_xts = as.xts.data.table(dt[, .(date, strategy, benchmark = returns)])
-  dt_xts
-}
-backtest_xts = backtset_by_threshold(backtest_data, 0.4)
+backtest_data[, ind := ext_ratio - shift(ext_ratio)]
+backtest_data = na.omit(backtest_data)
+backtest_data[, ind := ema(ind, 10)]
+# plot(as.xts.data.table(backtest_data[, .(date, ind)]))
+backtest_data[, sign := 1]
+backtest_data[shift(ind) > 0, sign := 0]
+backtest_data[is.na(sign), sign := 1]
+backtest_data[, strategy := returns * shift(sign)]
+backtest_data = na.omit(backtest_data)
+backtest_xts = as.xts.data.table(backtest_data[, .(date, strategy, benchmark = returns)])
 charts.PerformanceSummary(backtest_xts)
 
 # save data to QC to backtest there
-qc_data = backtest_data[, .(date, ext_sd)]
+qc_data = backtest_data[, .(date, ind)]
 qc_data[, date := as.character(date)]
 cont = storage_container(BLOBENDPOINT, "qc-backtest")
 storage_write_csv(qc_data, cont, "fredagg.csv", col_names = FALSE)
@@ -290,7 +291,7 @@ storage_write_csv(qc_data, cont, "fredagg.csv", col_names = FALSE)
 
 # MODEL AGGREGATE ---------------------------------------------------------
 # prepare data for modeling
-model_data = as.data.table(cbind.data.frame(total_extremes, c = DT$close))
+model_data = as.data.table(cbind.data.frame(total_extremes_dt, c = DT$close))
 model_data = model_data[, .(date, ext_ratio, returns = c / shift(c) - 1)]
 model_data = na.omit(model_data)
 ndiffs(model_data[, ext_ratio])
@@ -331,19 +332,55 @@ backtest_data = na.omit(backtest_data)
 backtest_xts = as.xts.data.table(backtest_data[, .(date, strategy, benchmark = returns)])
 charts.PerformanceSummary(backtest_xts)
 
+
+# IMPORTANT PREDICTORS ----------------------------------------------------
+# prepare dataset
+dt = fred_dt[popularity > 50]
+date_series = dt[, .N, by = .(date, series_id)]
+dt = unique(dt,
+            fromLast = TRUE,
+            by = c("series_id", "date"))
+dt = dcast(dt[, .(date, series_id, value_diff)],
+           date ~ series_id,
+           value.var = "value_diff")
+setorder(dt, date)
+predictors = colnames(dt)[2:ncol(dt)]
+dt[, (predictors) := lapply(.SD, nafill, type = "locf"), .SDcols = predictors]
+dt = dt[spy[, .(date, close)], on = "date"]
+dt[, `:=`(
+  ret_d = shift(close, n = -1, type = "shift") / close -1,
+  ret_w = shift(close, n = -5, type = "shift") / close -1,
+  ret_bw = shift(close, n = -10, type = "shift") / close -1,
+  ret_m = shift(close, n = -22, type = "shift") / close -1,
+  ret_q = shift(close, n = -66, type = "shift") / close -1
+)]
+
 # prepare data for prediciton
-train_X = DT[date %between% c("2000-01-01", "2022-01-01"), ..predictors]
-train_y = DT[date %between% c("2000-01-01", "2022-01-01"), ret_w]
-test_X  = DT[date %between% c("2022-01-01", "2023-10-01"), ..predictors]
-test_y  = DT[date %between% c("2022-01-01", "2023-10-01"), ret_w]
-train_X = train_X[, .SD, .SDcols = which(colSums(is.na(train_X)) == 0)]
-test_X  = test_X[, .SD, .SDcols = which(colSums(is.na(test_X)) == 0)]
+train_X = dt[date %between% c("2000-01-01", "2023-01-01"), ..predictors]
+train_y = dt[date %between% c("2000-01-01", "2023-01-01"), ret_w]
+test_X  = dt[date %between% c("2022-01-01", "2023-10-01"), ..predictors]
+test_y  = dt[date %between% c("2022-01-01", "2023-10-01"), ret_w]
+
+# remove columns with many NA values
+nas_cols_train = colSums(is.na(train_X))
+nas_cols_train = nas_cols_train / nrow(train_X)
+non_na = names(nas_cols_train)[nas_cols_train < 0.2]
+train_X = train_X[, ..non_na]
+test_X = test_X[, ..non_na]
+dim(train_X)
+dim(test_X)
+train_X[, 1:5]
+train_X = na.omit(train_X)
+test_X = na.omit(test_X)
+dim(train_X)
+dim(test_X)
 
 # featues importance
 f1st_res = f1st(y = train_y, x = as.matrix(train_X))
 res_1 = f1st_res[[1]]
 res_1 = res_1[res_1[, 1] != 0, , drop = FALSE]
 f1st_res_imp = colnames(train_X)[res_1[, 1]]
+f1st_res_imp
 # f3st_res = f3st(y = resp, x = bin, m = 2)
 # res_index <- unique(as.integer(f3st_res[[1]][1, ]))[-1]
 # res_index  <- res_index [res_index != 0]
@@ -351,81 +388,3 @@ f1st_res_imp = colnames(train_X)[res_1[, 1]]
 
 # rolling VAR
 
-
-
-# # TASKS -------------------------------------------------------------------
-# # create group variable
-# DT[, date := as.IDate(date)]
-# DT[, yearmonthid := round(date, digits = "month")]
-# DT[, .(date, date, yearmonthid)]
-# DT[, yearmonthid := as.integer(yearmonthid)]
-# DT[, .(date, date, yearmonthid)]
-#
-# # id coluns we always keep
-# id_cols = c("date", "yearmonthid")
-#
-# # convert date to PosixCt because it is requireed by mlr3
-# DT[, date := as.POSIXct(date, tz = "UTC")]
-#
-# # task with future week returns as target
-# colnames(DT)[grep("^ret", colnames(DT))]
-# target_ = "ret_d"
-# cols_ = c(id_cols, target_, predictors)
-# task_day <- as_task_regr(DT[, ..cols_], id = "taskDay", target = target_)
-#
-# # task with future month returns as target
-# target_ = "ret_w"
-# cols_ = c(id_cols, target_, predictors)
-# task_week <- as_task_regr(DT[, ..cols_], id = "taskWeek", target = target_)
-#
-# # task with future 2 months returns as target
-# target_ = "ret_bw"
-# cols_ = c(id_cols, target_, predictors)
-# task_beweek <- as_task_regr(DT[, ..cols_], id = "taskBeweek", target = target_)
-#
-# # task with future 2 months returns as target
-# target_ = "ret_m"
-# cols_ = c(id_cols, target_, predictors)
-# task_month <- as_task_regr(DT[, ..cols_], id = "taskmonth", target = target_)
-#
-# # set roles for symbol, date and yearmonth_id
-# task_day$col_roles$feature = setdiff(task_day$col_roles$feature, id_cols)
-# task_week$col_roles$feature = setdiff(task_week$col_roles$feature, id_cols)
-# task_beweek$col_roles$feature = setdiff(task_beweek$col_roles$feature, id_cols)
-# task_month$col_roles$feature = setdiff(task_month$col_roles$feature, id_cols)
-
-# task
-id_cols = c("date")
-colnames(DT)[grep("^ret", colnames(DT))]
-target_ = "ret_d"
-cols_ = c(id_cols, target_, f1st_res_imp)
-task = TaskRegrForecast$new(id = "day", backend = DT[, ..cols_],
-                            target = cols_[2:length(cols_)],
-                            date_col = "date")
-
-# learner
-learner = lrn("forecast.VAR")
-
-# resampling
-resampling = rsmp("forecast_holdout", ratio = 0.8)
-
-# train
-rr = resample(task, learner, resampling, store_models = TRUE)
-
-# results
-rr$aggregate(msr("forecast.mae"))
-
-task = tsk("petrol")
-task$feature_names
-learner = lrn("forecast.VAR")
-resampling = rsmp("forecast_holdout", ratio = 0.8)
-rr = resample(task, learner, resampling, store_models = TRUE)
-rr$aggregate(msr("forecast.mae"))
-
-load_task_petrol = function(id = "petrol") {
-  require_namespaces("fma")
-  b = as_data_backend.forecast(fma::petrol)
-  task = TaskRegrForecast$new(id, b, target = c("Chemicals", "Coal", "Petrol", "Vehicles"))
-  b$hash = task$man = "mlr3temporal::mlr_tasks_petrol"
-  task
-}

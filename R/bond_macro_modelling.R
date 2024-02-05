@@ -6,13 +6,69 @@ library(ggplot2)
 library(duckdb)
 library(lubridate)
 library(gausscov)
+library(fs)
 
+
+
+# DATA --------------------------------------------------------------------
+# get securities data from QC
+get_sec = function(symbol) {
+  con <- dbConnect(duckdb::duckdb())
+  query <- sprintf("
+    SELECT *
+    FROM 'F:/lean_root/data/all_stocks_daily.csv'
+    WHERE Symbol = '%s'
+", symbol)
+  data_ <- dbGetQuery(con, query)
+  dbDisconnect(con)
+  data_ = as.data.table(data_)
+  data_ = data_[, .(date = Date, close = `Adj Close`)]
+  data_[, returns := close / shift(close) - 1]
+  data_ = na.omit(data_)
+  dbDisconnect(con)
+  return(data_)
+}
+spy = get_sec("spy")
+tlt = get_sec("tlt")
+
+# import FRED meta
+fred_meta = fread("F:/macro/fred_series_meta.csv")
+fred_meta = unique(fred_meta, by = "id")
+
+# import FRED series data
+fred_files = dir_ls("F:/macro/fred")
+plan("multisession", workers = 4)
+fred_l = future_lapply(fred_files, fread)
+length(fred_l)
+fred_l = future_lapply(fred_l, function(dt_) dt_[, value := as.numeric(value)])
+fred_l = fred_l[!sapply(fred_l, is.null)]
+fred_l = fred_l[!sapply(fred_l, function(x) nrow(x) == 0)]
+
+# solve date problem
+fred_l = future_lapply(fred_l, function(dt) {
+  if (dt[, all(vintage == 1)]) {
+    dt[, date_real := realtime_start]
+  } else {
+    dt[, date_real := date]
+  }
+})
+
+# merge all series
+fred_dt = rbindlist(fred_l, fill = TRUE)
+setorder(fred_dt, series_id, date)
+
+# merge meta data
+fred_dt = fred_meta[, .(series_id = id, frequency_short, popularity, observation_start, units, id_category)][
+  fred_dt, on = "series_id"]
+
+# remove unnecessary columns
+fred_dt = fred_dt[, .(series_id, date = date_real, frequency_short, popularity,
+                      units, id_category, value)]
 
 
 # SET UP ------------------------------------------------------------------
 # globals
 PATHOHLCV = "F:/lean_root/data/equity/usa/daily"
-NASPATH       = "C:/Users/Mislav/SynologyDrive/trading_data"
 
 # # help vars
 cols_ohlc = c("open", "high", "low", "close")
@@ -22,7 +78,6 @@ cols_ohlcv = c("open", "high", "low", "close", "volume")
 ENDPOINT = storage_endpoint(Sys.getenv("BLOB-ENDPOINT-SNP"),
                             Sys.getenv("BLOB-KEY-SNP"))
 cont = storage_container(ENDPOINT, "indexes")
-
 
 
 # DATA --------------------------------------------------------------------

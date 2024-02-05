@@ -4,7 +4,7 @@ library(httr)
 library(rvest)
 library(roll)
 library(ggplot2)
-
+library(YieldCurve)
 
 
 # SET UP ------------------------------------------------------------------
@@ -115,3 +115,23 @@ ggplot(dt_plot, aes(x = date, y = close_gld, color = factor(slope))) +
 
 dt_plot[, mean(bond_return, na.rm = TRUE), by = slope]
 
+
+library(MultiATSM)
+data("CM_Yields")
+Yields[, 1:5]
+dim(Yields)
+Yields[, 155:159]
+
+data("CM_Factors")
+RiskFactors
+RiskFactors[, 1:5]
+
+data("CM_Trade")
+TradeFlows
+TradeFlows[, 1:5]
+
+
+data("CM_Factors_2023")
+RiskFactors
+dim(RiskFactors)
+RiskFactors[,75:80]
