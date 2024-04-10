@@ -1,67 +1,54 @@
-# library(ts2net)
-library(finfeatures)
-library(ggplot2)
 library(data.table)
-library(stringr)
-library(dataPreparation)
-library(runner)
-library(TTR)
-library(PerformanceAnalytics)
-library(AzureStor)
-library(tiledb)
-library(rtsplot)
+library(arrow)
+library(lubridate)
+
+# library(ts2net)
+# library(finfeatures)
+# library(ggplot2)
+# library(stringr)
+# library(dataPreparation)
+# library(runner)
+# library(TTR)
+# library(PerformanceAnalytics)
 
 
 # PARAMETERS -------------------------------------------------------------
-symbols = c("AAPL", "ABBV", "AMZN", "COST", "SPY", "DOW", "DUK", "ACN")
+# Parameters we use in analysis below
+symbols = c("aapl", "abbv", "amzn", "cost", "spy", "dow", "duk", "acn")
 zz_pct_change = 5 # 2, 3 sd
 e = 0.01 # mean return
 
+# import Databento minute data
+prices = read_parquet("F:/databento/minute.parquet")
 
+# change timezone
+attr(prices$ts_event, "tz")
+prices[, ts_event := with_tz(ts_event, tz = "America/New_York")]
+attr(prices$ts_event, "tz")
 
-# IMPORT DATA -------------------------------------------------------------
-# configure s3
-config <- tiledb_config()
-config["vfs.s3.aws_access_key_id"] <- "AKIA43AHCLIILOAE5CVS"
-config["vfs.s3.aws_secret_access_key"] <- "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"
-config["vfs.s3.region"] <- "eu-central-1"
-context_with_config <- tiledb_ctx(config)
-
-# get minute data from AWS S3 TileDB
-arr <- tiledb_array("s3://equity-usa-minute-fmp-adjusted",
-                    as.data.frame = TRUE,
-                    selected_ranges = list(symbol = cbind(symbols, symbols)))
-system.time(old_data <- arr[])
-old_data <- as.data.table(old_data)
-
-# plot
-data_ <- as.xts.data.table(old_data[symbol == "AAPL", .(date, high)])
-data_ <- data_[2590023:nrow(data_)]
-rtsplot(data_, type = "l")
-
-
-# REMOVE OUTLIERS ---------------------------------------------------------
 # calcualte ohlc returns
-cols <- c("open", "high", "low", "close")
-old_data[, (paste0(cols, "_returns")) := lapply(.SD, function(x) (x / shift(x)) - 1), .SDcols = cols, by = symbol]
-market_data <- na.omit(old_data)
+cols = c("open", "high", "low", "close")
+prices[, (paste0(cols, "_returns")) := lapply(.SD, function(x) (x / shift(x)) - 1),
+       .SDcols = cols, by = instrument_id ]
+prices = na.omit(prices)
 
 # TODO add to mlfinance package
-# remove ooutliers
-remove_sd_outlier_recurse <- function(df, ...) {
+# remove outliers
+remove_sd_outlier_recurse = function(df, ...) {
 
   # remove outliers
-  x_ <- remove_sd_outlier(data_set = df, ...)
+  x_ = dataPreparation::remove_sd_outlier(data_set = df, ...)
   while (nrow(x_) < nrow(df)) {
     df <- x_
-    x_ <- remove_sd_outlier(data_set = df, ...)
+    x_ = dataPreparation::remove_sd_outlier(data_set = df, ...)
   }
   return(df)
 }
 
 # remove outliers
-market_data <-  market_data[, remove_sd_outlier_recurse(df = .SD, cols = c("high_returns", "high", "low_returns", "low"), n_sigmas = 4),
-                            by = symbol]
+prices = prices[, remove_sd_outlier_recurse(
+  df = .SD, cols = c("high_returns", "high", "low_returns", "low"),
+  n_sigmas = 4), by = symbol]
 
 # plot
 data_ <- as.xts.data.table(market_data[symbol == "AAPL", .(date, high)])
@@ -70,7 +57,7 @@ data_ <- as.xts.data.table(market_data[symbol == "AAPL", .(date, low)])
 rtsplot(data_, type = "l")
 
 # calcualte zig zag
-DT <- market_data[, .(symbol, date, open, high, low, close, volume)]
+dt = prices[, .(symbol, date, open, high, low, close, volume)]
 setorder(DT, symbol, date)
 DT <- na.omit(DT)
 DT[, zz := ZigZag(as.matrix(.SD[, .(high, low)]),

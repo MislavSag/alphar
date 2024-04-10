@@ -1,0 +1,241 @@
+---
+title: "Mean reversion with stable EPS"
+author: "Mislav Sagovac"
+date: last-modified
+format: html
+execute:
+  echo: false
+  warning: false
+editor: visual
+---
+
+```{r}
+library(data.table)
+library(arrow)
+library(roll)
+library(PerformanceAnalytics)
+library(ggplot2)
+library(patchwork)
+
+# global vars
+PATH = "F:/data/equity/us"
+```
+
+```{r}
+#| cache: true
+#| include: false
+
+# Import QC daily data
+prices = fread("F:/lean/data/stocks_daily.csv")
+setnames(prices, gsub(" ", "_", c(tolower(colnames(prices)))))
+
+# Remove duplicates
+prices = unique(prices, by = c("symbol", "date"))
+
+# Remove duplicates - there are same for different symbols (eg. phun and phun.1)
+dups = prices[, .(symbol , n = .N),
+              by = .(date, open, high, low, close, volume, adj_close,
+                     symbol_first = substr(symbol, 1, 1))]
+dups = dups[n > 1]
+dups[, symbol_short := gsub("\\.\\d$", "", symbol)]
+symbols_remove = dups[, .(symbol, n = .N),
+                      by = .(date, open, high, low, close, volume, adj_close,
+                             symbol_short)]
+symbols_remove[n >= 2, unique(symbol)]
+symbols_remove = symbols_remove[n >= 2, unique(symbol)]
+symbols_remove = symbols_remove[grepl("\\.", symbols_remove)]
+prices = prices[symbol %notin% symbols_remove]
+
+# adjust all columns
+prices[, adj_rate := adj_close / close]
+prices[, let(
+  open = open*adj_rate,
+  high = high*adj_rate,
+  low = low*adj_rate
+)]
+setnames(prices, "close", "close_raw")
+setnames(prices, "adj_close", "close")
+prices[, let(adj_rate = NULL)]
+setcolorder(prices, c("symbol", "date", "open", "high", "low", "close", "volume"))
+
+# Remove observations where open, high, low, close columns are below 1e-008
+prices = prices[open > 1e-008 & high > 1e-008 & low > 1e-008 & close > 1e-008]
+
+# Remove missing values
+prices = na.omit(prices)
+
+# Keep only symbol with at least 2 years of data
+symbol_keep = prices[, .N, symbol][N >= 2 * 252, symbol]
+prices = prices[symbol %chin% symbol_keep]
+
+# keep 100 most liquid at every date
+# 200 by volume => cca 20 mil rows
+# 100 by volume => cca 13 mil rows
+# 50 by volume => cca 8 mil rows
+prices[, dollar_volume := close * volume]
+setorder(prices, date, -dollar_volume)
+liquid_symbols = prices[, .(symbol = first(symbol, 100)), by = date]
+liquid_symbols = liquid_symbols[, unique(symbol)]
+sprintf("We keep %f percent of data",
+        length(liquid_symbols) / prices[, length(unique(symbol))] * 100)
+prices = prices[symbol %chin% liquid_symbols]
+prices[, dollar_volume := NULL]
+
+# Sort
+setorder(prices, symbol, date)
+
+# free memory
+gc()
+```
+
+```{r}
+plot_close = function(s) {
+ plot(as.xts.data.table(prices[symbol == s, .(date, close)]), 
+      main = toupper(s),
+      engine = "ggplot2")
+}
+par(mfrow = c(2, 2))
+lapply(c("aapl", "spy", "tlt", "meta"), plot_close)
+par(mfrow = c(1, 1))
+```
+
+```{r}
+# Import fundamental data
+fundamentals = read_parquet(fs::path(PATH,
+                                     "predictors_daily",
+                                     "factors",
+                                     "fundamental_factors",
+                                     ext = "parquet"))
+
+# clean fundamentals
+fundamentals[, symbol := tolower(symbol)]
+fundamentals = fundamentals[date > as.Date("2000-01-01")]
+fundamentals[, acceptedDateTime := as.POSIXct(acceptedDate, tz = "America/New_York")]
+fundamentals[, acceptedDate := as.Date(acceptedDateTime)]
+fundamentals[, acceptedDateFundamentals := acceptedDate]
+data.table::setnames(fundamentals, "date", "fundamental_date")
+fundamentals = unique(fundamentals, by = c("symbol", "acceptedDate"))
+
+# choose fundamental columns
+cols = colnames(fundamentals)
+fundamentals[, .SD, .SDcols = cols[grepl("earning|eps", cols, ignore.case = TRUE)]]
+cols_funds = c("symbol", "acceptedDateFundamentals", "acceptedDate", "EPSGrowth", "EPS")
+falpha = fundamentals[, ..cols_funds]
+
+# calculate EPSGrowth rolling standard deviation
+setorder(falpha, symbol, acceptedDate)
+falpha[, EPSGrowth_sd := roll_sd(EPSGrowth, 4*3), by = symbol]
+```
+
+```{r}
+# Crate ggplot that shows EPS distribution every month using boxplots
+data_plot = falpha[, .(symbol, year = data.table::year(acceptedDate),  EPS)]
+data_plot = data_plot[ , last(.SD), by = c("symbol", "year")]
+data_plot = data_plot[year %in% c(2000, 2005, 2010, 2015, 2020, 2023), .(year, EPS)]
+data_plot_wins = data_plot[, .(eps = DescTools::Winsorize(EPS, probs = c(0.02, 0.98), na.rm = TRUE)), 
+                           by = "year"]
+data_plot_wins2 = data_plot[, .(eps = DescTools::Winsorize(EPS, probs = c(0.05, 0.95), na.rm = TRUE)),
+                            by = "year"]
+data_plot_wins3 = data_plot[, .(eps = DescTools::Winsorize(EPS, probs = c(0.1, 0.90), na.rm = TRUE)),
+                            by = "year"]
+p1 = ggplot(data_plot, aes(x = factor(year), y = EPS)) + geom_boxplot() + labs(title = "EPS dist")
+p2 = ggplot(data_plot_wins, aes(x = factor(year), y = eps)) + geom_boxplot() + labs(title = "EPS dist wins 2")
+p3 = ggplot(data_plot_wins2, aes(x = factor(year), y = eps)) + geom_boxplot() + labs(title = "EPS dist wins 5")
+p4 = ggplot(data_plot_wins3, aes(x = factor(year), y = eps)) + geom_boxplot() + labs(title = "EPS dist wins 10")
+(p1 + p2) / (p3 + p4)
+```
+
+```{r}
+# merge prices and selected fundamental data
+prices[, date_prices := date]
+dt = falpha[prices, on = c("symbol", "acceptedDate" = "date"), roll = Inf]
+
+# calculate month returns
+setorder(dt, symbol, date_prices)
+dt[, returns := close / shift(close, 22) - 1, by = symbol]
+
+# keep columns wee need
+dt = dt[, .(symbol, date = date_prices, close, returns, EPSGrowth, EPSGrowth_sd, EPS)]
+dt = na.omit(dt, cols = c("close", "EPSGrowth", "EPSGrowth_sd", "EPS", "returns"))
+
+# define new var that is TRUE if it is last day of the month
+dt[, month := data.table::yearmon(date)]
+dt[, last_month_day := last(date) == date, by = c("symbol", "month")]
+first(dt, 10)
+```
+
+```{r}
+# Select universe - choose stocks with lowest EPS standard deviation, 
+# positive EPS growth and largest return decline
+universe = dt[last_month_day == TRUE]
+setorder(universe, symbol, date)
+
+# Create target
+universe[, target := shift(close, -1, type = "shift") / close - 1, by = symbol]
+universe = na.omit(universe, cols = c("target"))
+
+# Keep only stocks with positive EPS 
+# universe = universe[EPS > 0]
+
+# Keep stocks with lowest EPSGrowth_sd
+setorder(universe, month, -EPSGrowth_sd)
+universe = universe[, last(.SD, 500), by = month]
+
+# Inspect
+universe[, .N, by = month]
+universe[, .N, by = month][N < 100]
+
+# Keep observations above 2022
+universe = universe[month > 2002.99]
+
+# Keep only stocks with negative returns
+setorder(universe, month, returns)
+universe = universe[, first(.SD, 20), by = month]
+universe[, .N == 10, by = month]
+```
+
+```{r}
+# portfolio returns
+portfolio = copy(universe)
+portfolio[, date_month := lubridate::ceiling_date(date, "month") - 1]
+portfolio_ret = portfolio[, .(ret = sum(target * (1 / length(target)))), by = date_month]
+Return.annualized(as.xts.data.table(portfolio_ret))
+charts.PerformanceSummary(portfolio_ret)
+```
+
+# Robustness
+
+```{r}
+# Select universe - choose stocks with lowest EPS standard deviation, 
+# positive EPS growth and largest return decline
+universe = dt[last_month_day == TRUE]
+setorder(universe, symbol, date)
+
+# Create target
+universe[, target := shift(close, -1, type = "shift") / close - 1, by = symbol]
+universe = na.omit(universe, cols = c("target"))
+
+# Keep only stocks with positive EPS 
+universe = universe[EPS > 0]
+
+# parameters
+
+# Keep stocks with lowest EPSGrowth_sd
+setorder(universe, month, -EPSGrowth_sd)
+universe = universe[, last(.SD, 500), by = month]
+
+# Inspect
+universe[, .N, by = month]
+universe[, .N, by = month][N < 100]
+
+# Keep observations above 2022
+universe = universe[month > 2002.99]
+
+# Keep only stocks with negative returns
+setorder(universe, month, returns)
+universe = universe[, first(.SD, 20), by = month]
+universe[, .N == 10, by = month]
+```
+
+
+

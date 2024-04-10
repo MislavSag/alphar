@@ -1,26 +1,29 @@
 library(data.table)
-library(timechange)
-library(roll)
-library(tiledb)
-library(lubridate)
-library(rtsplot)
-library(TTR)
-library(patchwork)
-library(ggplot2)
-library(AzureStor)
-library(PerformanceAnalytics)
+# library(timechange)
+# library(roll)
+# library(tiledb)
+# library(lubridate)
+# library(rtsplot)
+# library(TTR)
+# library(patchwork)
+# library(ggplot2)
+# library(AzureStor)
+# library(PerformanceAnalytics)
 
 
 
 # UTILS -------------------------------------------------------------------
 # date segments
-GFC <- c("2007-01-01", "2010-01-01")
-COVID <- c("2020-01-01", "2021-06-01")
-AFTER_COVID <- c("2021-06-01", "2022-01-01")
-NEW <- c("2022-01-01", as.character(Sys.Date()))
+GFC         = c("2007-01-01", "2010-01-01")
+COVID       = c("2020-01-01", "2021-06-01")
+AFTER_COVID = c("2021-06-01", "2022-01-01")
+CORECTION   = c("2022-01-01", "2022-08-01")
+NEW         = c("2022-08-01", as.character(Sys.Date()))
 
 
 # IMPORT DATA -------------------------------------------------------------
+# Import
+
 # import market data
 arr <- tiledb_array("D:/equity-usa-hour-fmpcloud-adjusted",
                     as.data.frame = TRUE,
