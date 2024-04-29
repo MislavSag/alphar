@@ -8,10 +8,9 @@ library(ggplot2)
 library(AzureStor)
 
 
-
 # params
 base_url <- "https://www.quantconnect.com/forum/discussion/"
-last_id <- 30000
+last_id <- 40000
 first_id <- 1
 
 # get all backtest urls
@@ -26,7 +25,7 @@ for (i in last_id:first_id) {
   backtests <- c(backtest_urls, backtests)
   Sys.sleep(0.1)
 }
-backtests <- c(backtests)
+backtests <- c(backtests) # ?
 backtests <- backtests[!is.na(backtests)]
 backtests <- unique(backtests)
 file_name <- paste0("qc_backtestes-",
@@ -86,27 +85,58 @@ file_name <- paste0("qc_backtestes_finish-",
 fwrite(backtests_qc, file = file_name)
 
 # import backtests
-list.files()
-backtests_qc <- fread("qc_backtestes_finish-20221114123644.csv")
+# list.files()
+# load("qc_backtestes-20240425152335.rda")
+# backtests_qc <- fread("qc_backtestes_finish-20240425180648.csv")
 
 # analyse results
-backtests_qc_filter <- backtests_qc[(total_trades_2 > 100 | total_trades > 100) &
-                                      (sharpe_ratio > 1 | sharpe_ratio_2 > 1) &
+backtests_qc_filter <- backtests_qc[(total_trades_2 > 2000 | total_trades > 2000) &
+                                      (sharpe_ratio > 2 | sharpe_ratio_2 > 2) &
                                       (win_rate > 0.6 | win_rate_2 > 0.6) &
-                                      (drawdown < 30) &
+                                      (drawdown < 15) &
                                       (average_win > 0.02 | average_win_2  > 0.02)]
 setorder(backtests_qc_filter, -expectancy)
 dim(backtests_qc_filter)
-backtests_qc_filter[46:50]
+cols_keep = backtests_qc_filter[, colnames(backtests_qc_filter)[((colSums(is.na(.SD)) == nrow(backtests_qc_filter)) == FALSE)]]
 
-# https://www.quantconnect.com/terminal/cache/embedded_backtest_f2795ae39c02e27d63f0f0e4e9bc49da.html
+# mannually checked  - not so good
+remove = c(
+  "embedded_backtest_2c7174d1e530e0a739ea7ed3045514f3.html", # OOS bad
+  "embedded_backtest_47a1545a409fd06fe720a8e8c6f067b2.html", # second resolution, but good
+  "embedded_backtest_dac873598cf3050bfe19b755c707d709.html", # trash
+  "embedded_backtest_1c32ed180c2e36e2c9522407f3daa898.html", # OOS bad
+  "embedded_backtest_b9254a7bd0a2e7adf0b1f922afcf953d.html", # trash
+  "embedded_backtest_b9acead306e56646518f737070607698.html", # trash
+  "embedded_backtest_f85389d055c02498ab5c139f7e82f35e.html", # OOS bad
+  "embedded_backtest_c0386922c28878e8681c7d4927f3c902.html", # OOS bad
+  "embedded_backtest_6e42fd9344e027b779677ef11e4eb475.html", # https://www.quantconnect.com/forum/discussion/11613/algo-trend0/p2
+  "embedded_backtest_c188fc249bfb818ce7d11671af22432a.html", # OOS bad
+  "embedded_backtest_5f29b3b1e72940bc5929f48df8793f85.html", # TA
+  "embedded_backtest_b7286e7356d9d699b624e7d49aa6a0a9.html", # TA
+  "embedded_backtest_2d8018d02b7ef6ab475c96676ea8a264.html", # crypto costs
+  "embedded_backtest_153666d002ee071bf47343a1ce5085a0.html", # trash
+  "embedded_backtest_58b4dd064e82274fb0eb8dd8237de123.html" # TA and can;t make it work
+)
+good = c(
+  # stock sentiment with tingo
+  # https://www.quantconnect.com/forum/discussion/10666/tiingo-sentiment-analysis-on-stocks-dictionary-over-64k-limit/
+  "embedded_backtest_1988b6938e94b66934f2aa35758b1e38.html",
+  # second resolution; Warren Harding; reversal; works on one symbol, on SPY much worse
+  "embedded_backtest_5c9c1a74df40af2a393ff50f25b131f0.html"
+)
+backtests_qc_filter[backtest %notin% c(remove, good), ..cols_keep]
+
+# https://www.quantconnect.com/terminal/cache/embedded_backtest_40dfff00a8ac3e3f96b911d42c7a27f0.html
+
+# People = .ekz., Warren Harding, Vladimir,
+
 
 # save to SNP blob
 SNP_KEY = "0M4WRlV0/1b6b3ZpFKJvevg4xbC/gaNBcdtVZW+zOZcRi0ZLfOm1v/j2FZ4v+o8lycJLu1wVE6HT+ASt0DdAPQ=="
 SNP_ENDPOINT = "https://snpmarketdata.blob.core.windows.net/"
 bl_endp_key <- storage_endpoint(SNP_ENDPOINT, key=SNP_KEY)
 cont <- storage_container(bl_endp_key, "webscraping-qc")
-storage_upload(cont, "qc_backtestes_finish-20221114123644.csv", "qc_backtestes_finish-20221114123644.csv")
+storage_upload(cont, file_name, file_name)
 
 # manual inspect
 # embedded_backtest_c7e3f80567e6f6392c9e089d76281f08.html - pairs trading

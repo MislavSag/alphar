@@ -6,6 +6,9 @@ library(PerformanceAnalytics)
 library(runner)
 library(future.apply)
 library(doParallel)
+library(Rcpp)
+library(glue)
+
 
 
 # Import Databento minute data
@@ -33,6 +36,10 @@ prices = prices[, .(symbol, time = ts_event, close = close)]
 # Upsample to 5 Minute
 prices = prices[, .(close = last(close)), by = .(symbol, time = round_date(time, "5 mins"))]
 gc()
+
+################ TEST ################
+# prices = prices[53500000:54500000]
+################ TEST ################
 
 # Calculate PRA
 windows = c(90 * 5, 90 * 22, 90 * 66, 90 * 132)
@@ -118,22 +125,29 @@ backtest_data = na.omit(backtest_data)
 backtest_data[, returns := close / shift(close) - 1]
 backtest_data = na.omit(backtest_data)
 
+# Save backtest data
+# fwrite(backtest_data, "F:/predictors/pra5m/backtest_data.csv")
+
+# Read backtest_data
+backtest_data = fread("F:/predictors/pra5m/backtest_data.csv")
+
 
 # INSAMPLE OPTIMIZATION ---------------------------------------------------
 # Optimization params
 variables = colnames(backtest_data)[grepl("sum_pr_|sd_pr_", colnames(backtest_data))]
 params = backtest_data[, ..variables][, lapply(.SD, quantile, probs = seq(0, 1, 0.05))]
 params = melt(params)
-params = merge(data.frame(sma_width=c(1, 7, 35)), params, by=NULL)
+setnames(params, c("variable", "thresholds"))
+# params = merge(data.frame(sma_width=c(1, 7, 35)), params, by=NULL)
 
 # help vectors
 returns_    = backtest_data[, returns]
-thresholds_ = params[, 3]
-vars        = as.character(params[, 2])
-ns          = params[, 1]
+thresholds_ = params[, 2][[1]]
+vars        = as.character(params[, 1][[1]])
+# ns          = params[, 1]
 
 # backtest vectorized
-BacktestVectorized <- function(returns, indicator, threshold, return_cumulative = TRUE) {
+BacktestVectorized = function(returns, indicator, threshold, return_cumulative = TRUE) {
   sides <- ifelse(c(NA, head(indicator, -1)) > threshold, 0, 1)
   sides[is.na(sides)] <- 1
 
@@ -151,160 +165,215 @@ system.time({
   opt_results_vect_l =
     vapply(1:nrow(params), function(i)
       BacktestVectorized(returns_,
-                         # backtest_data[, get(vars[i])],
-                         TTR::SMA(backtest_data[, get(vars[i])], ns[i]),
+                         backtest_data[, get(vars[i])],
+                         # TTR::SMA(backtest_data[, get(vars[i])], ns[i]),
                          thresholds_[i]),
       numeric(1))
 })
+# user  system elapsed
+# 12.45    3.69   16.11
+
+# Optimization vectorized with cpp
+Rcpp::sourceCpp("backtest.cpp")
+system.time({opt_results_vect_l_cpp = opt(backtest_data, params)})
+# user  system elapsed
+# 1.08    0.23    1.34
+
+# compare R and cpp
+all(round(opt_results_vect_l, 1) == round(opt_results_vect_l_cpp, 1))
+
+# Inspect results
 opt_results_vectorized = cbind.data.frame(params, opt_results_vect_l)
 setorder(opt_results_vectorized, -opt_results_vect_l)
-head(opt_results_vectorized, 10)
+head(opt_results_vectorized, 30)
 
 # Inspect individual results
-strategy_returns <- BacktestVectorized(returns_,
-                                       backtest_data[, sd_pr_below_dummy_net_03975940],
-                                       0.44,
-                                       FALSE)
+strategy_returns = BacktestVectorized(returns_,
+                                      backtest_data[, sd_pr_below_dummy_net_03975940],
+                                      0.44,
+                                      FALSE)
 charts.PerformanceSummary(xts(cbind(returns_, strategy_returns), order.by = backtest_data[, time]))
 
 
 # BUY / SELL WF OPTIMIZATION ----------------------------------------------
 # Define params
-variables_wf = unique(as.character(head(opt_results_vectorized$variable, 10)))
-params_wf = backtest_data[, ..variables_wf][, lapply(.SD, quantile, probs = seq(0, 1, 0.05))]
-params_wf = melt(params_wf)
+variables_wf  = unique(as.character(head(opt_results_vectorized$variable, 100)))
+# variables_wf = colnames(backtest_data)[grepl("sum_pr_.*below|sd_pr_.*below",
+#                                              colnames(backtest_data))]
+quantiles_wf = backtest_data[, ..variables_wf][, lapply(.SD, quantile, probs = seq(0, 1, 0.05))]
+params_wf = melt(quantiles_wf)
+setnames(params_wf, c("variable", "thresholds"))
 
-# Prepare walk foward optimization
+# Prepare walk forward optimization
 cols = c("time", "returns", variables_wf)
 df = as.data.frame(backtest_data[, ..cols])
+df[, 2:ncol(df)] = lapply(df[, 2:ncol(df)], function(x) as.numeric(x))
 returns_wf    = df$returns
 thresholds_wf = params_wf[, 2][[1]]
 vars_wf       = as.character(params_wf[, 1][[1]])
-cl = makeCluster(8)
-clusterExport(
-  cl,
-  c("df", "BacktestVectorized", "params_wf", "returns_wf", "thresholds_wf", "vars_wf"),
-  envir = environment())
-windows = c(90 * 252, 90 * 252 * 2)
+# cl = makeCluster(8)
+# clusterExport(
+#   cl,
+#   c("df", "BacktestVectorized", "params_wf", "returns_wf", "thresholds_wf", "vars_wf"),
+#   envir = environment())
+# windows = c(90 * 252, 90 * 252 * 2)
+windows = c(90 * 252)
 # clusterEvalQ(cl, {library(tsDyn)})
 
-# Walk forward optimization
-# plan("multisession", workers = 4L)
-start_time = Sys.time()
-best_params_window_l = lapply(windows, function(w) {
-  bres = runner(
+#
+w = 90 * 252
+system.time({
+  bres_1 = runner(
     x = df,
     f = function(x) {
-      cbind(tail(x$time, 1),
-            params_wf,
-            vapply(1:nrow(params_wf), function(i) {
-              BacktestVectorized(returns_wf, x[, vars_wf[i]], thresholds_wf[i])
-            }, numeric(1)))
+      head(cbind(
+        time = tail(x$time, 1),
+        params_wf,
+        sr = vapply(1:nrow(params_wf), function(i) {
+          BacktestVectorized(x$returns, x[, vars_wf[i]], thresholds_wf[i])
+        }, numeric(1))
+      ), 1)
     },
     k = w,
-    at = (90 * 252):nrow(df), # 23680
-    cl = cl,
+    at = (90 * 252):22730, # 22730 - 22680
+    # cl = cl,
     na_pad = TRUE,
     simplify = FALSE
   )
-  file_name = paste0(
-    "exuber_bestparams_all_", w, "_",
-    format.POSIXct(Sys.time(), format = "%Y%m%d%H%M%S"), ".rds"
+})
+# user  system elapsed
+# 5.64    5.07   10.72
+system.time({
+  bres_2 = runner(
+    x = df,
+    f = function(x) {
+      head(cbind(
+        time = tail(x$time, 1),
+        params_wf,
+        sr = opt(x, params_wf)
+      ), 1)
+    },
+    k = w,
+    at = (90 * 252):22730, # nrow(df)
+    # cl = cl,
+    na_pad = TRUE,
+    simplify = FALSE
   )
-  file_name = file.path("F:/predictors/pra5m", file_name)
-  saveRDS(bres, file_name)
 })
-end_time = Sys.time()
-time_elapsed = end_time - start_time
-stopCluster(cl)
-# No parallel - Time difference of 2.205164 mins
-# Parallel    - Time difference of 15.86806 secs
+# user  system elapsed
+# 1.70    0.23    1.93
 
-# Import optimmized WF data
-best_params = readRDS("F:/predictors/pra5m/exuber_bestparams_all_22680_20240409110941.rds")
+length(bres_1)
+length(bres_2)
+all(
+  vapply(seq_along(bres_1), function(i) {
+    all(bres_1[[i]][, round(sr, 1)] == bres_2[[i]][, round(sr, 1)])
+  }, logical(1))
+)
 
-
-# Prepare data for WF optimization
-var_ = "sum_pr_below_dummy_01_1980"
-backtest_data_wf = backtest_data[, .(time, close, x), env = list(x = var_)]
-backtest_data_wf[, returns := close / shift(close) - 1]
-backtest_data_wf = na.omit(backtest_data_wf)
-
-# Optimization params
-params = melt(params)
-# params = merge(data.frame(sma_width=c(1, 7, 35)), params, by=NULL)
-
-# Help vectors
-returns_    = backtest_data_wf[, returns]
-thresholds_ = quantile(backtest_data_wf[, ..var_][[1]], probs = seq(0, 1, 0.05))
-
-
-
-
-# CROSS VALIDATION USING C++ ----------------------------------------------
-library(RCPP)
-
-# Cpp version of above backtest function
-Rcpp::cppFunction("
-  double backtest_cpp(NumericVector returns, NumericVector indicator, double threshold) {
-    int n = indicator.size();
-    NumericVector sides(n);
-
-    for(int i=0; i<n; i++){
-      if(i==0 || R_IsNA(indicator[i-1])) {
-        sides[i] = 1;
-      } else if(indicator[i-1] > threshold){
-        sides[i] = 0;
-      } else {
-        sides[i] = 1;
-      }
-    }
-
-    NumericVector returns_strategy = returns * sides;
-
-    double cum_returns{ 1 + returns_strategy[0]} ;
-    for(int i=1; i<n; i++){
-      cum_returns *= (1 + returns_strategy[i]);
-    }
-    cum_returns = cum_returns - 1;
-
-    return cum_returns;
-  }
-", rebuild = TRUE)
-
-###### POSIBLY FASTER #######
-# // [[Rcpp::export]]
-# NumericVector backtest_cpp(NumericVector returns, NumericVector indicator, double threshold) {
-#   int n = indicator.size();
-#   NumericVector sides(n, 1.0); // Default to 1
-#
-#   for(int i = 1; i < n; ++i) {
-#     if(!NumericVector::is_na(indicator[i-1]) && indicator[i-1] > threshold) {
-#       sides[i] = 0;
-#     }
-#   }
-#
-#   NumericVector returns_strategy = returns * sides;
-#   NumericVector cum_returns(n);
-#   cum_returns[0] = 1 + returns_strategy[0];
-#   for(int i = 1; i < n; ++i) {
-#     cum_returns[i] = cum_returns[i-1] * (1 + returns_strategy[i]);
-#   }
-#
-#   return cum_returns - 1;
-# }
-###### POSIBLY FASTER #######
-
-# Inspect individual results
+# Rcpp runner
+# Rcpp::sourceCpp("C:/Users/Mislav/Documents/GitHub/alphar/backtest.cpp")
+df_test = df[1:70,]
 system.time({
-  backtest_cpp(returns_,
-               backtest_data[, sd_pr_below_dummy_net_03975940],
-               0.44)
+  runner_cpp = wfo(df_test, params_wf, 20, "rolling")
 })
-system.time({
-  BacktestVectorized(returns_,
-                     backtest_data[, sd_pr_below_dummy_net_03975940],
-                     0.44,
-                     FALSE)
+runner_cpp = lapply(runner_cpp, function(df_) {
+  df_[, 1] = as.POSIXct(df_[, 1])
+  df_
 })
+runner_cpp = lapply(runner_cpp, function(df_) {
+  df_[, 1] = with_tz(df_[, 1], tzone = "America/New_York")
+  df_
+})
+runner_cpp = lapply(runner_cpp, function(df_) {
+  cbind.data.frame(df_, params_wf)
+})
+runner_cpp[[1]]
+df_test[20, "time"]
 
+# Compare results between cpp and R WFO
+system.time({
+  bres_1 = runner(
+    x = df,
+    f = function(x) {
+      y = cbind.data.frame(
+        time = tail(x$time, 1),
+        params_wf,
+        sr = vapply(1:nrow(params_wf), function(i) {
+          BacktestVectorized(x$returns, x[, vars_wf[i]], thresholds_wf[i])
+        }, numeric(1))
+      )
+      # order y dta.table by sr colun
+      y = y[order(y$sr, decreasing = TRUE),]
+      head(y, 1)
+    },
+    k = w,
+    at = (90 * 252):22730, # 22730 - 22680
+    # cl = cl,
+    na_pad = TRUE,
+    simplify = FALSE
+  )
+})
+# user  system elapsed
+# 4.20    3.67    7.87
+df_test = df[1:22730,]
+system.time({
+  runner_cpp = wfo(df_test, params_wf, 22680, "rolling")
+})
+# user  system elapsed
+# 0.78    0.14    0.92
+length(runner_cpp) == length(bres_1)
+runner_cpp = lapply(runner_cpp, function(df_) {
+  df_[, 1] = as.POSIXct(df_[, 1])
+  df_
+})
+runner_cpp = lapply(runner_cpp, function(df_) {
+  df_[, 1] = with_tz(df_[, 1], tzone = "America/New_York")
+  df_
+})
+runner_cpp = lapply(runner_cpp, function(df_) {
+  cbind.data.frame(df_, params_wf)
+})
+runner_cpp_dt = rbindlist(runner_cpp)
+runner_cpp_dt = runner_cpp_dt[, .SD[which.max(Vector)], by = Scalar]
+head(runner_cpp_dt); head(rbindlist(bres_1));
+tail(runner_cpp_dt); tail(rbindlist(bres_1));
+
+# Walk forward optimization
+w = 84 * 252 # number of bars per day * number of days
+wfo_results = wfo(df = df,
+                  params = params_wf,
+                  window = w,
+                  window_type = "expanding")
+time_ = format.POSIXct(Sys.time(), format = '%Y%m%d%H%M%S')
+file_name = glue("exuber_bestparams_all_{w}_{time_}_expanding.rds")
+file_name = file.path("F:/predictors/pra5m", file_name)
+# saveRDS(wfo_results, file_name)
+
+
+# Continue with data cleaning
+# wfo_results = readRDS("F:/predictors/pra5m/exuber_bestparams_all_22680_20240418110756.rds")
+# wfo_results = readRDS("F:/predictors/pra5m/exuber_bestparams_all_22680_20240422124700_expanding.rds")
+wfo_results = lapply(wfo_results, function(df_) {
+  cbind.data.frame(df_, params_wf)
+})
+wfo_results = rbindlist(wfo_results)
+setnames(wfo_results, c("time", "sr", "variable", "threshold"))
+wfo_results[, time := as.POSIXct(time)]
+# wfo_results[, time := with_tz(time, tzone = "America/New_York")]
+wfo_results = wfo_results[, .SD[which.max(sr)], by = time]
+wfo_results[, variable := as.character(variable)]
+
+# Reshape results
+cols_keep_spy = c("time", "close", wfo_results[, unique(variable)])
+wfo_dt = backtest_data[, ..cols_keep_spy]
+wfo_dt = melt(wfo_dt, id.vars = c("time", "close"))
+setorder(wfo_dt, time)
+wfo_dt = merge(wfo_dt, wfo_results, by = c("time", "variable"), all.x = TRUE, all.y = FALSE)
+wfo_dt = na.omit(wfo_dt, cols = "threshold")
+
+wfo_dt[, signal := value < shift(threshold)]
+wfo_dt[, returns := close / shift(close) - 1]
+wfo_dt = na.omit(wfo_dt)
+wfo_dt[, strategy_returns := returns * shift(signal)]
+charts.PerformanceSummary(as.xts.data.table(wfo_dt[, .(time, returns, strategy_returns)]))
