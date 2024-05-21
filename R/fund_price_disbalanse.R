@@ -94,8 +94,11 @@ fundamentals = unique(fundamentals, by = c("symbol", "acceptedDate"))
 
 # choose fundamental columns
 cols = colnames(fundamentals)
-fundamentals[, .SD, .SDcols = cols[grepl("earning|eps", cols, ignore.case = TRUE)]]
-cols_funds = c("symbol", "acceptedDateFundamentals", "acceptedDate", "EPSGrowth", "EPS")
+fundamentals[, .SD, .SDcols = cols[grepl("earning|eps|rev", cols, ignore.case = TRUE)]]
+cols_funds = c("symbol", "acceptedDateFundamentals", "acceptedDate",
+               "EPSGrowth", "EPS",
+               "fiveYRevenueGrowthPerShare",
+               "threeYRevenueGrowthPerShare")
 falpha = fundamentals[, ..cols_funds]
 
 # calculate EPSGrowth rolling standard deviation
@@ -118,7 +121,7 @@ dt[, (cols) := lapply(returns_months, function(x) close / shift(close, x) - 1),
 
 # keep columns wee need
 cols_keep = c("symbol", "date_prices", "close", "close_raw", "volume",
-              "EPSGrowth", "EPS", cols_epsg, cols)
+              "EPSGrowth", "EPS", "threeYRevenueGrowthPerShare", cols_epsg, cols)
 dt = dt[, ..cols_keep]
 dt = na.omit(dt, cols = c("close", "close_raw", "EPS", "volume", cols))
 
@@ -148,8 +151,12 @@ backtest = function(uni,
                     eps_n = "EPSGrowth_sd_1",
                     mom_n = 20,
                     coarse_n = 100,
+                    rev_positive = TRUE,
                     ret_sharpe = TRUE) {
   # uni = copy(universe)
+  if (rev_positive) {
+    uni = uni[threeYRevenueGrowthPerShare > 0]
+  }
   uni[, rank_volume := frank(-dollar_volume, ties.method = "dense"), by = month]
   uni[rank_volume < coarse_n]
   uni = uni[EPS > x, env = list(x = eps_thresh)]
@@ -180,14 +187,15 @@ params = expand.grid(
   return_mom = cols[c(1, 6, 12)],  # return period to calculate to identify mean reversion
   eps_n = cols_epsg[c(1, 3, 6)],   # number of months to calculate EPS SD
   mom_n = c(10, 20, 50),           # number of stocks to include in universe
-  coarse_n = c(1000, 2000),         # number of stocks to include in coarse universe
+  coarse_n = c(1000, 2000),        # number of stocks to include in coarse universe
+  rev_positive = c(TRUE, FALSE),   # include only stocks with positive revenue growth
   stringsAsFactors = FALSE)
 # plan("multisession", workers = 4)
 results = future_lapply(1:nrow(params), function(i) {
   # print(i)
   # i = 945
   x = params[i, ]
-  backtest(universe, x[1, 1], x[1, 2], x[1, 3], x[1, 4], x[1, 5], x[1, 6], x[1, 7])
+  backtest(universe, x[1, 1], x[1, 2], x[1, 3], x[1, 4], x[1, 5], x[1, 6], x[1, 7], x[1, 8])
 })
 ind_ = which.max(unlist(results))
 params[ind_, ]

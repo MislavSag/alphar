@@ -96,13 +96,28 @@ if (file.exists(path_)) {
   theft_py = fread(path_)
 } else {
   theft_init = RollingTheft$new(
-    windows = 400, # one window since it is memory intensive for 2 wondws
+    windows = 400, # one window since it is memory intensive for 2 windows
     workers = 1L,
     at = 1:nrow(ohlcv$X),
     lag = 0L,
-    features_set = c("tsfel", "tsfresh")) # "catch22", "feasts",
+    features_set = c("tsfel")) # "catch22", "feasts",
   theft_py = suppressMessages(theft_init$get_rolling_features(ohlcv))
   fwrite(theft_py, path_)
+}
+
+# Theft py 2
+path_ = glue("{PATH_PREDICTORS}/theft_py2.csv")
+if (file.exists(path_)) {
+  theft_py2 = fread(path_)
+} else {
+  theft_init = RollingTheft$new(
+    windows = 100,
+    workers = 1L,
+    at = 1:nrow(ohlcv$X),
+    lag = 0L,
+    features_set = c("tsfel", "tsfresh"))
+  theft_py2 = suppressMessages(theft_init$get_rolling_features(ohlcv))
+  fwrite(theft_py2, path_)
 }
 
 # Theft r
@@ -111,7 +126,7 @@ if (file.exists(path_)) {
   theft_r = fread(path_)
 } else {
   theft_init = RollingBackcusum$new(
-    windows = c(400),
+    windows = 400,
     workers = 1L,
     at = 1:nrow(ohlcv$X),
     lag = 0L,
@@ -124,18 +139,12 @@ if (file.exists(path_)) {
 rolling_predictors <- Reduce(
   function(x, y) merge( x, y, by = c("symbol", "date"), all.x = TRUE, all.y = FALSE),
   list(
-    RollingBidAskFeatures,
-    RollingBackCusumFeatures,
-    RollingExuberFeatures,
-    RollingForecatsFeatures,
-    # RollingGasFeatures,
-    RollingGpdFeatures,
+    exuber,
+    backcusum,
+    theft_py,
     RollingTheftCatch22Features,
     RollingTheftTsfelFeatures,
-    RollingTsfeaturesFeatures,
-    # RollingQuarksFeatures,
-    RollingWaveletArimaFeatures
-    # RollingFracdiffFeatures     # TODO Add this in next iteration
+    RollingTsfeaturesFeatures
   )
 )
 

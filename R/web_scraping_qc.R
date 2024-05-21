@@ -90,12 +90,17 @@ fwrite(backtests_qc, file = file_name)
 # backtests_qc <- fread("qc_backtestes_finish-20240425180648.csv")
 
 # analyse results
-backtests_qc_filter <- backtests_qc[(total_trades_2 > 2000 | total_trades > 2000) &
-                                      (sharpe_ratio > 2 | sharpe_ratio_2 > 2) &
-                                      (win_rate > 0.6 | win_rate_2 > 0.6) &
-                                      (drawdown < 15) &
-                                      (average_win > 0.02 | average_win_2  > 0.02)]
-setorder(backtests_qc_filter, -expectancy)
+backtests_qc_filter <- backtests_qc[(total_trades_2 > 1000 | total_trades > 1000) &
+                                      (sharpe_ratio > 1.5 | sharpe_ratio_2 > 1.5) &
+                                      (win_rate > 0.55 | win_rate_2 > 0.55) &
+                                      (drawdown < 25) &
+                                      (average_win > 0.01 | average_win_2  > 0.01)]
+backtests_qc_filter <- backtests_qc[(total_trades_2 > 100 | total_trades > 100) &
+                                      (sharpe_ratio > 1 | sharpe_ratio_2 > 1) &
+                                      # (win_rate > 0.52 | win_rate_2 > 0.52) &
+                                      (drawdown < 20) &
+                                      (average_win > 0.01 | average_win_2  > 0.01)]
+setorder(backtests_qc_filter, -information_ratio)
 dim(backtests_qc_filter)
 cols_keep = backtests_qc_filter[, colnames(backtests_qc_filter)[((colSums(is.na(.SD)) == nrow(backtests_qc_filter)) == FALSE)]]
 
@@ -115,21 +120,31 @@ remove = c(
   "embedded_backtest_b7286e7356d9d699b624e7d49aa6a0a9.html", # TA
   "embedded_backtest_2d8018d02b7ef6ab475c96676ea8a264.html", # crypto costs
   "embedded_backtest_153666d002ee071bf47343a1ce5085a0.html", # trash
-  "embedded_backtest_58b4dd064e82274fb0eb8dd8237de123.html" # TA and can;t make it work
+  "embedded_backtest_58b4dd064e82274fb0eb8dd8237de123.html", # TA and can;t make it work
+  "embedded_backtest_5c9c1a74df40af2a393ff50f25b131f0.html", # works for one symbol
+  "embedded_backtest_c5a4ec425f817b1229d7c2b5bd4eed1e.html", # trash after fees
+  "embedded_backtest_05c116747bdf3f42e0a12c6f9a5c42a8.html", # TA and very bad fo some futures, but good for others
+  "embedded_backtest_9d56c3f92e0857e9ffbe20d1982a0c71.html", # OOS bad and not my game
+  "embedded_backtest_10046cf88d78b7d681c00072e567cf0b.html", # trash
+  "embedded_backtest_ef999085d3d1a3b587c894460f521c93.html", # trash
+  "embedded_backtest_4cde894460bb2dc6d17f444490a0a7a1.html" # trash
 )
 good = c(
   # stock sentiment with tingo
   # https://www.quantconnect.com/forum/discussion/10666/tiingo-sentiment-analysis-on-stocks-dictionary-over-64k-limit/
   "embedded_backtest_1988b6938e94b66934f2aa35758b1e38.html",
-  # second resolution; Warren Harding; reversal; works on one symbol, on SPY much worse
-  "embedded_backtest_5c9c1a74df40af2a393ff50f25b131f0.html"
+  # In and out strategy
+  # https://www.quantconnect.com/terminal/cache/embedded_backtest_05c116747bdf3f42e0a12c6f9a5c42a8.html
+  # lots of posts an dvariations. Read all posts and try to find some good variaton
+  "embedded_backtest_1c1cbe327da74fdfdb330d6cf9a8cabf.html"
 )
 backtests_qc_filter[backtest %notin% c(remove, good), ..cols_keep]
 
-# https://www.quantconnect.com/terminal/cache/embedded_backtest_40dfff00a8ac3e3f96b911d42c7a27f0.html
+# https://www.quantconnect.com/terminal/cache/embedded_backtest_10046cf88d78b7d681c00072e567cf0b.html
 
 # People = .ekz., Warren Harding, Vladimir,
-
+# Posts:
+# https://www.quantconnect.com/forum/discussion/9597/the-in-amp-out-strategy-continued-from-quantopian/p1
 
 # save to SNP blob
 SNP_KEY = "0M4WRlV0/1b6b3ZpFKJvevg4xbC/gaNBcdtVZW+zOZcRi0ZLfOm1v/j2FZ4v+o8lycJLu1wVE6HT+ASt0DdAPQ=="

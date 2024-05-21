@@ -14,13 +14,11 @@ library(ggplot2)
 library(AzureStor)
 
 
-
-
 # SET UP ------------------------------------------------------------------
 # globals
-DATAPATH      = "F:/lean_root/data/all_stocks_hour.csv"
-URIEXUBER     = "F:/equity-usa-hour-exuber"
-NASPATH       = "C:/Users/Mislav/SynologyDrive/trading_data"
+DATAPATH  = "F:/lean_root/data/all_stocks_hour.csv"
+URIEXUBER = "F:/equity-usa-hour-exuber"
+NASPATH   = "C:/Users/Mislav/SynologyDrive/trading_data"
 
 # parameters
 exuber_window = c(600)
