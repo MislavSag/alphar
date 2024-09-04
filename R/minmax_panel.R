@@ -1,12 +1,11 @@
 library(data.table)
+library(Rcpp)
+library(TTR)
 library(lubridate)
 library(ggplot2)
-library(moments)
-library(TTR)
 library(PerformanceAnalytics)
-library(gausscov)
 library(runner)
-library(doParallel)
+library(glue)
 
 
 # UTILS -------------------------------------------------------------------
@@ -17,67 +16,23 @@ AFTER_COVID = c("2021-06-01", "2022-01-01")
 CORECTION   = c("2022-01-01", "2022-08-01")
 NEW         = c("2022-08-01", as.character(Sys.Date()))
 
+# Globals
+RESULTS = "F:/strategies/MinMaxWfo"
+
 
 # DATA --------------------------------------------------------------------
-# Import prices and MinMax data
-list.files("F:/predictors/minmax")
-dt = fread("F:/predictors/minmax/20240228.csv")
-
-# check timezone
-dt[, attr(date, "tz")]
-dt[, date := with_tz(date, tzone = "America/New_York")]
-dt[, attr(date, "tz")]
-
-# Spy data
-spy = dt[symbol == "spy", .(date, close, returns)]
-
-# Extreme returns
-cols = colnames(dt)[grep("^p_9", colnames(dt))]
-cols_new_up = paste0("above_", cols)
-dt[, (cols_new_up) := lapply(.SD, function(x) ifelse(returns > x, returns - shift(x), 0)),
-   by = .(symbol), .SDcols = cols] # Shifted to remove look-ahead bias
-cols = colnames(dt)[grep("^p_0", colnames(dt))]
-cols_new_down = paste0("below_", cols)
-dt[, (cols_new_down) := lapply(.SD, function(x) ifelse(returns < x, abs(returns - shift(x)), 0)),
-   by = .(symbol), .SDcols = cols]
-
-
-# SYSTEMIC RISK -----------------------------------------------------------
-# help function to calcualte tail risk measures from panel
-tail_risk = function(dt, FUN = mean, cols_prefix = "mean_") {
-  cols = colnames(dt)[grep("below_p|above_p", colnames(dt))]
-  indicators_ = dt[, lapply(.SD, function(x) f(x, na.rm = TRUE)),
-                   by = .(date), .SDcols = cols,
-                   env = list(f = FUN)]
-  colnames(indicators_) = c("date", paste0(cols_prefix, cols))
-  setorder(indicators_, date)
-  above_sum_cols = colnames(indicators_)[grep("above", colnames(indicators_))]
-  below_sum_cols = colnames(indicators_)[grep("below", colnames(indicators_))]
-  excess_sum_cols = gsub("above", "excess", above_sum_cols)
-  indicators_[, (excess_sum_cols) := indicators_[, ..above_sum_cols] - indicators_[, ..below_sum_cols]]
-}
-
-# get tail risk mesures
-indicators_mean      = tail_risk(dt, FUN = "mean", cols_prefix = "mean_")
-indicators_sd        = tail_risk(dt, FUN = "sd", cols_prefix = "sd_")
-indicators_sum       = tail_risk(dt, FUN = "sum", cols_prefix = "sum_")
-indicators_skewness  = tail_risk(dt, FUN = "skewness", cols_prefix = "skewness_")
-indicators_kurtosis  = tail_risk(dt, FUN = "kurtosis", cols_prefix = "kurtosis_")
-
-# merge indicators and spy
-indicators = Reduce(function(x, y) merge(x, y, by = "date", all.x = TRUE, all.y = FALSE),
-                    list(indicators_mean, indicators_sd, indicators_sum,
-                         indicators_skewness, indicators_kurtosis))
-
-# Inspect final table
-dim(indicators)
-excess_cols = colnames(indicators)[grepl("excess", colnames(indicators))]
-
-# Free memory
-rm(dt)
+# SPY data
+spy = fread("F:/predictors/minmax/20240228.csv")
+spy[, attr(date, "tz")]
+spy[, date := with_tz(date, tzone = "America/New_York")]
+spy[, attr(date, "tz")]
+spy = spy[symbol == "spy", .(date, close, returns)]
 gc()
 
-# merge spy and indicators
+# Import indicators
+indicators = fread("F:/predictors/minmax/indicators.csv")
+
+# Merge spy and indicators
 sysrisk = merge(indicators, spy, by = "date", all.x = TRUE, all.y = FALSE)
 sysrisk = na.omit(sysrisk, cols = "returns")
 
@@ -113,75 +68,121 @@ na.omit(data_plot)[, mean(returns), by = .(alpha)] |>
   ggplot(aes(x = alpha, y = V1)) +
   geom_bar(stat = "identity")
 
-# Prepare backtest data
-# cols = c("date", "close", "returns", excess_cols)
-cols = c("date", "close", "returns", excess_cols[grep("sd_", excess_cols)])
-# colnames(indicators)[grepl("sd_", colnames(indicators))]
+# Choose columns
+# 1) Choose subset of columns
+cols = c("date", "close", "returns", colnames(indicators)[grepl("sum_ex", colnames(indicators))])
 backtest_dt = sysrisk[, ..cols]
+# 2) choose all columns
+backtest_dt = copy(sysrisk)
+
+# Remove columns with many NA values
 cols_keep = colnames(backtest_dt)[sapply(backtest_dt, function(x) sum(is.na(x))/length(x) < 0.5)]
 backtest_dt = backtest_dt[, ..cols_keep]
+
+# Remove NA values
 backtest_dt = na.omit(backtest_dt)
-predictors = backtest_dt[, colnames(backtest_dt)[4:ncol(backtest_dt)]]
 
-# Optimization insample parameters
-params = backtest_dt[, ..predictors]
-params = params[, lapply(.SD, quantile, probs = seq(0, 1, 0.02), na.rm = TRUE)]
-params = melt(params)
-params = merge(data.frame(sma_width=c(1, 5, 15, 22)), params, by=NULL)
-params = unique(params)
+# Define predictors
+predictors = setdiff(colnames(backtest_dt), c("date", "close", "returns"))
+predictors_excess = predictors[grepl("excess", predictors)]
+predictors_sum = predictors[grepl("sum", predictors)]
+predictors_sd = predictors[grepl("sd", predictors)]
+predictors_skew = predictors[grepl("skew", predictors)]
+predictors_kurtosis = predictors[grepl("kurtosis", predictors)]
 
-# help vectors
-returns_    = backtest_dt[, returns]
-thresholds_ = params[, 3]
-vars        = as.vector(params[, 2])
-ns          = params[, 1]
 
-# backtest vectorized
-# library(Rcpp)
-# Rcpp::cppFunction("
-#   double backtest_cpp(NumericVector returns, NumericVector indicator, double threshold) {
-#     int n = indicator.size();
-#     NumericVector sides(n);
-#
-#     for(int i=0; i<n; i++){
-#       if(i==0 || R_IsNA(indicator[i-1])) {
-#         sides[i] = 1;
-#       } else if(indicator[i-1] < threshold){
-#         sides[i] = 0;
-#       } else {
-#         sides[i] = 1;
-#       }
-#     }
-#
-#     NumericVector returns_strategy = returns * sides;
-#
-#     double cum_returns{ 1 + returns_strategy[0]} ;
-#     for(int i=1; i<n; i++){
-#       cum_returns *= (1 + returns_strategy[i]);
-#     }
-#     cum_returns = cum_returns - 1;
-#
-#     return cum_returns;
-#   }
-# ", rebuild = TRUE)
+# INSAMPLE OPTIMIZATION ---------------------------------------------------
+# backtest Rcpp
+Rcpp::cppFunction("
+  double backtest_cpp(NumericVector returns, NumericVector indicator, double threshold) {
+    int n = indicator.size();
+    NumericVector sides(n);
+
+    for(int i=0; i<n; i++){
+      if(i==0 || R_IsNA(indicator[i-1])) {
+        sides[i] = 1;
+      } else if (indicator[i-1] < threshold){
+        sides[i] = 0;
+      } else {
+        sides[i] = 1;
+      }
+    }
+
+    NumericVector returns_strategy = returns * sides;
+
+    double cum_returns{ 1 + returns_strategy[0]} ;
+    for(int i=1; i<n; i++){
+      cum_returns *= (1 + returns_strategy[i]);
+    }
+    cum_returns = cum_returns - 1;
+
+    return cum_returns;
+  }
+", rebuild = TRUE)
+Rcpp::cppFunction("
+  double backtest_above_threshold(NumericVector returns, NumericVector indicator, double threshold) {
+    int n = indicator.size();
+    NumericVector sides(n);
+
+    for(int i=0; i<n; i++){
+      if(i==0 || R_IsNA(indicator[i-1])) {
+        sides[i] = 1;
+      } else if (indicator[i-1] > threshold){
+        sides[i] = 0;
+      } else {
+        sides[i] = 1;
+      }
+    }
+
+    NumericVector returns_strategy = returns * sides;
+
+    double cum_returns{ 1 + returns_strategy[0]} ;
+    for(int i=1; i<n; i++){
+      cum_returns *= (1 + returns_strategy[i]);
+    }
+    cum_returns = cum_returns - 1;
+
+    return cum_returns;
+  }
+", rebuild = TRUE)
+
 backtest_vectorized = function(returns, indicator, threshold, return_cumulative = TRUE) {
-  sides = ifelse(c(NA, head(indicator, -1)) > threshold, 0, 1)
+  # returns = returns_
+  # i = 1
+  # indicator = SMA(backtest_dt[, get(vars[i])], ns[i])
+  # threshold = thresholds_[i]
+  # return_cumulative = TRUE
+
+  # sides = ifelse(c(NA, head(indicator, -1)) > threshold, 0, 1)
+  sides = ifelse(shift(indicator) < threshold, 0, 1)
   sides[is.na(sides)] = 1
 
-  returns_strategy <- returns * sides
+  returns_strategy = returns * sides
+  # returns_strategy_1 = returns_strategy
 
   if (return_cumulative) {
+    # cum_returns = 1 + returns_strategy[1]
+    # for (i in 2:length(returns_strategy)) {
+    #   cum_returns = cum_returns * (1 + returns_strategy[i])
+    # }
+    # return(cum_returns - 1)
     return(PerformanceAnalytics::Return.cumulative(returns_strategy))
   } else {
     return(returns_strategy)
   }
 }
 backtest <- function(returns, indicator, threshold, return_cumulative = TRUE) {
+  # returns = returns_
+  # i = 1
+  # indicator = SMA(backtest_dt[, get(vars[i])], ns[i])
+  # threshold = thresholds_[i]
+  # return_cumulative = TRUE
+
   sides <- vector("integer", length(indicator))
   for (i in seq_along(sides)) {
     if (i %in% c(1) || is.na(indicator[i-1])) {
-      sides[i] <- NA
-    } else if (indicator[i-1] > threshold) {
+      sides[i] <- 1
+    } else if (indicator[i-1] < threshold) {
       sides[i] <- 0
     } else {
       sides[i] <- 1
@@ -189,6 +190,8 @@ backtest <- function(returns, indicator, threshold, return_cumulative = TRUE) {
   }
   sides <- ifelse(is.na(sides), 1, sides)
   returns_strategy <- returns * sides
+  # returns_strategy_2 = returns_strategy
+
   if (return_cumulative) {
     return(PerformanceAnalytics::Return.cumulative(returns_strategy))
   } else {
@@ -212,42 +215,295 @@ performance <- function(x) {
   return(Perf)
 }
 
+# Function to get parameterss
+get_params = function(dt, predictors) {
+  # Optimization insample parameters
+  params = dt[, ..predictors]
+  params = params[, lapply(.SD, quantile, probs = seq(0, 1, 0.02), na.rm = TRUE)]
+  params = melt(params, variable.factor = FALSE)
+  param_sman = c(1, 5, 15, 22, 44, 66)
+
+  # Combine variables, thresholds and sma_n
+  params_expanded = params[rep(1:.N, each = length(param_sman))]
+  params_expanded[, new_col := rep(param_sman, times = nrow(params))]
+  params_expanded = unique(params_expanded)
+  setnames(params_expanded, c("variable", "thresholds", "sma_n"))
+
+  return(params_expanded)
+}
+
+# Parameters
+params_above_threshold = get_params(backtest_dt, predictors_sd)
+
+# help vectors
+returns_    = backtest_dt[, returns]
+vars        = params_expanded[, 1][[1]]
+thresholds_ = params_expanded[, 2][[1]]
+ns          = params_expanded[, 3][[1]]
+vars_above       = params_above_threshold[, 1][[1]]
+thresholds_above = params_above_threshold[, 2][[1]]
+ns_above         = params_above_threshold[, 3][[1]]
+
 # optimization loop
 system.time({
-  opt_results_l =
-    vapply(1:nrow(params), function(i)
-      backtest_cpp(returns_,
-                   SMA(sysrisk[, get(vars[i])], ns[i]),
-                   thresholds_[i]),
-      numeric(1))
+  opt_results = vapply(1:nrow(params_expanded), function(i) {
+    backtest_cpp(returns_, SMA(backtest_dt[, get(vars[i])], ns[i]), thresholds_[i])
+  }, numeric(1))
 })
-opt_results = cbind.data.frame(params, opt_results_l)
-opt_results = opt_results[order(opt_results$opt_results_l), ]
+opt_results_dt = as.data.table(
+  cbind.data.frame(params_expanded, cum_return = opt_results)
+)
+setnames(opt_results_dt, c("var", "threshold", "sma_n", "cum_return"))
+setorder(opt_results_dt, -cum_return)
+first(opt_results_dt, 10)
+
+# optimization loop for above threshold backtest
+system.time({
+  opt_results = vapply(1:nrow(params_expanded), function(i) {
+    backtest_above_threshold(returns_, SMA(backtest_dt[, get(vars[i])], ns[i]), thresholds_[i])
+  }, numeric(1))
+})
+opt_results_dt = as.data.table(
+  cbind.data.frame(params_expanded, cum_return = opt_results)
+)
+setnames(opt_results_dt, c("var", "threshold", "sma_n", "cum_return"))
+setorder(opt_results_dt, -cum_return)
+first(opt_results_dt, 10)
 
 # optimization loop vectorized
 system.time({
-  opt_results_vect_l =
-    vapply(1:nrow(params), function(i)
-      backtest_vectorized(returns_,
-                          SMA(backtest_dt[, get(vars[i])], ns[i]),
-                          thresholds_[i]),
+  opt_results_vect =
+    vapply(1:nrow(params_expanded), function(i)
+      backtest_vectorized(returns_, SMA(backtest_dt[, get(vars[i])], ns[i]), thresholds_[i]),
       numeric(1))
 })
-opt_results_vectorized = cbind.data.frame(params, opt_results_vect_l)
-opt_results_vectorized = opt_results_vectorized[order(opt_results_vectorized$opt_results_vect_l), ]
+opt_results_vect_dt = as.data.table(
+  cbind.data.frame(params_expanded, cum_return = opt_results_vect)
+)
+setnames(opt_results_vect_dt, c("var", "threshold", "sma_n", "cum_return"))
+setorder(opt_results_vect_dt, -cum_return)
+first(opt_results_vect_dt, 10)
 
-# Same!
-tail(opt_results_vectorized, 40) # best results
+# # optimization loop with backtest
+# system.time({
+#   opt_results_r =
+#     vapply(1:nrow(params_expanded), function(i)
+#       backtest(returns_, SMA(backtest_dt[, get(vars[i])], ns[i]), thresholds_[i]),
+#       numeric(1))
+# })
+# # user  system elapsed
+# # 1619.35    1.19 1622.57
+# opt_results_r_dt = cbind.data.frame(params_expanded, opt_results_r)
+# setnames(opt_results_r_dt, c("threshold", "sma_n", "var", "cum_return"))
+# setorder(opt_results_r_dt, -cum_return)
+# first(opt_results_r_dt, 10)
 
-# inspect results
-strategy_returns <- backtest(returns_,
-                             SMA(backtest_dt[, sd_excess_p_999_halfyear ], 1),
-                             0.0001708726,
-                             FALSE)
+# Compare above results. Should be all the same. If all test TRUE, they are same
+all.equal(length(opt_results_vect), length(opt_results_r), length(opt_results))
+all(round(opt_results_vect, 2) == round(opt_results_r, 2))
+all(round(opt_results_vect, 2) == round(opt_results, 2))
+
+# Results across vars
+vars_results = opt_results_dt[, .(var_mean = mean(cum_return)), by = var]
+vars_results[, var_agg := gsub("_.*", "", var)]
+vars_results[, mean(var_mean), by = var_agg]
+
+# inspect best results
+best_strategy = opt_results_dt[1, ]
+strategy_returns = backtest(returns_,
+                            SMA(backtest_dt[, .SD, .SDcols = best_strategy$var],
+                                best_strategy$sma_n),
+                            best_strategy$threshold,
+                            FALSE)
 dt_xts = xts(cbind(returns_, strategy_returns), order.by = backtest_dt[, date])
 charts.PerformanceSummary(dt_xts)
-performance(dt_xts[, 1])
-performance(dt_xts[, 2])
+charts.PerformanceSummary(dt_xts["2020/"])
+charts.PerformanceSummary(dt_xts["2022/"])
+charts.PerformanceSummary(dt_xts["2023/"])
+
+# Results across lags
+dt_ = as.data.table(opt_results_dt)
+dt_[, .(mean = mean(cum_return),
+        median = median(cum_return)), by = sma_n]
+
+# Optimization for above threshold
+opt_results_above = vapply(1:nrow(params_above_threshold), function(i) {
+  backtest_cpp(returns_,
+               SMA(backtest_dt[, get(vars_above[i])], ns_above[i]),
+               thresholds_above[i])
+}, numeric(1))
+opt_results_above_dt = as.data.table(
+  cbind.data.frame(params_above_threshold, cum_return = opt_results_above)
+)
+setnames(opt_results_above_dt, c("var", "threshold", "sma_n", "cum_return"))
+setorder(opt_results_above_dt, -cum_return)
+first(opt_results_above_dt, 10)
+
+
+# RCPP VS R ---------------------------------------------------------------
+# Source backtest.cpp file
+sourceCpp("backtest.cpp")
+
+# Backtest function
+system.time({
+  x = backtest(
+    returns_,
+    SMA(backtest_dt[, .SD, .SDcols = best_strategy$var], best_strategy$sma_n),
+    best_strategy$threshold,
+    TRUE)
+})
+system.time({
+  y = backtest_sell_below_threshold(
+    returns_,
+    SMA(backtest_dt[, .SD, .SDcols = best_strategy$var], best_strategy$sma_n),
+    best_strategy$threshold)
+})
+all(round(x, 3) == round(y, 3))
+
+# SMA function
+x_= runif(100)
+sma_x = SMA(x_, 50)
+sma_y = calculate_sma(x_, 50)
+all(sma_x == sma_y, na.rm = TRUE)
+
+# Optimization function
+params = backtest_dt[, ..predictors]
+params = params[, lapply(.SD, quantile, probs = seq(0, 1, 0.3), na.rm = TRUE)]
+params = melt(params, variable.factor = FALSE)
+param_sman = c(1, 5, 15, 22, 44, 66)
+params_expanded = params[rep(1:.N, each = length(param_sman))]
+params_expanded[, new_col := rep(param_sman, times = nrow(params))]
+params_expanded = unique(params_expanded)
+setnames(params_expanded, c("variable", "thresholds", "sma_n"))
+returns_    = backtest_dt[, returns]
+vars        = params_expanded[, 1][[1]]
+thresholds_ = params_expanded[, 2][[1]]
+ns          = params_expanded[, 3][[1]]
+system.time({
+  x = vapply(1:nrow(params_expanded), function(i) {
+    backtest_cpp(returns_, SMA(backtest_dt[, get(vars[i])], ns[i]), thresholds_[i])
+  }, numeric(1))
+})
+# Optimization function cpp
+params_ = copy(params_expanded)
+setnames(params_, c("variable", "thresholds", "sma_n"))
+system.time({y = opt_with_sma(df = backtest_dt, params = params_)})
+length(x) == length(y)
+all(round(x, 3) == round(y, 3))
+
+# WFO approaches
+windows = 7 * 22
+system.time({
+  x = lapply(windows, function(w) {
+    bres = runner(
+      x = as.data.frame(backtest_dt),
+      f = function(x) {
+        ret = vapply(1:nrow(params_), function(i) {
+          backtest_vectorized(x$returns,
+                              SMA(x[, params_[i, variable]], params_[i, sma_n]),
+                              params_[i, thresholds])
+        }, numeric(1))
+        returns_strategies = cbind.data.frame(params_, ret)
+        returns_strategies[order(returns_strategies$ret, decreasing = TRUE), ]
+      },
+      k = w,
+      at = 154:250,
+      na_pad = TRUE,
+      simplify = FALSE
+    )
+  })
+})
+df_ = as.data.frame(backtest_dt[1:250])
+colnames(df_)[1] = "time"
+
+system.time({y = wfo_with_sma(df_, params_, windows, "rolling")})
+length(x[[1]])
+length(y)
+nrow(x[[1]][[1]])
+nrow(y[[1]])
+y = lapply(y, function(df_) {
+  df_[, 1] = as.POSIXct(df_[, 1])
+  df_
+})
+y = lapply(y, function(df_) {
+  df_[, 1] = with_tz(df_[, 1], tzone = "America/New_York")
+  df_
+})
+y = lapply(y, function(df_) {
+  cbind.data.frame(df_, params_)
+})
+y = rbindlist(y)
+setorder(y, Scalar, -Vector)
+head(x[[1]][[1]]); head(y)
+all(round(x[[1]][[1]][, "ret"], 2) == y[1:nrow(x[[1]][[1]]), round(Vector, 2)])
+
+
+# WALK FORWARD OPTIMIZATION -----------------------------------------------
+# Optimization params
+predictors_ = c(predictors_skew, predictors_kurtosis)
+params = backtest_dt[, ..predictors_]
+params = params[, lapply(.SD, quantile, probs = seq(0, 1, 0.02), na.rm = TRUE)]
+params = melt(params, variable.factor = FALSE)
+param_sman = c(1, 5, 15, 22, 44, 66)
+params_expanded = params[rep(1:.N, each = length(param_sman))]
+params_expanded[, new_col := rep(param_sman, times = nrow(params))]
+params_expanded = unique(params_expanded)
+setnames(params_expanded, c("variable", "thresholds", "sma_n"))
+
+# WFO utils
+clean_wfo = function(y) {
+  y = lapply(y, function(df_) {
+    df_[, 1] = as.POSIXct(df_[, 1])
+    df_[, 1] = with_tz(df_[, 1], tzone = "America/New_York")
+    cbind.data.frame(df_, params_expanded)
+  })
+  y = rbindlist(y)
+  return(y)
+}
+calcualte_and_save_wfo = function(window) {
+  # window = 7 * 22 * 6
+  wfo_results_ = wfo(df, params_expanded, window, "rolling")
+  wfo_results_ = clean_wfo(wfo_results_)
+  fwrite(wfo_results_, file.path(RESULTS, glue("wfo_results_{window}.csv")))
+  return(0)
+}
+
+# Walk forward optimization
+df = as.data.frame(backtest_dt)
+colnames(df)[1] = "time"
+calcualte_and_save_wfo(7 * 22 * 1)
+# calcualte_and_save_wfo(7 * 22 * 6)
+# calcualte_and_save_wfo(7 * 22 * 12)
+# calcualte_and_save_wfo(7 * 22 * 18) # never finished try before go home
+
+# Import results
+list.files(RESULTS)
+wfo_results = fread(file.path(RESULTS, "wfo_results_154.csv"))
+setnames(wfo_results, c("date", "return", "variable", "thresholds", "n"))
+setorder(wfo_results, date, return)
+
+# Keep only sd
+# wfo_results = wfo_results[variable %like% "sd_"]
+
+# Keep best
+wfo_results_best_n = wfo_results[, first(.SD, 50), by = date]
+wfo_results_best_n[, unique(variable)]
+
+# Merge results with backtest data, that is price data
+backtest_long = melt(backtest_dt, id.vars = c("date", "returns"))
+backtest_long = merge(backtest_long, wfo_results_best_n, by = c("date", "variable"),
+                      all.x = TRUE, all.y = FALSE)
+backtest_long = na.omit(backtest_long, cols = "return")
+backtest_long[, signal := value < thresholds]
+backtest_long[, signal_ensamble := sum(signal) > 20, by = date]
+backtest_long = unique(backtest_long[, .(date, returns, signal = signal_ensamble)])
+
+# Backtest
+backtest_xts = backtest_long[, .(date, benchmark = returns, signal = shift(signal))]
+backtest_xts[, strategy := benchmark * signal]
+backtest_xts = as.xts.data.table(na.omit(backtest_xts))
+charts.PerformanceSummary(backtest_xts)
+
 
 
 # GAUSSCOV PREDICTIONS ----------------------------------------------------

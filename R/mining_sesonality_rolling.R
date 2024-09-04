@@ -1,119 +1,161 @@
 library(data.table)
 library(quantreg)
-library(AzureStor)
 library(qlcal)
 library(lubridate)
+library(AzureStor)
 
 
+# SET UP ------------------------------------------------------------------
+# global vars
+PATH = "F:/data/equity/us"
 
-# DATA IMPORT -------------------------------------------------------------
-# set up
+# Set calendar
+calendars
 setCalendar("UnitedStates/NYSE")
 
-# import daily market data
-system.time({dt = fread("F:/lean_root/data/all_stocks_daily.csv")})
 
-# this want be necessary after update
-setnames(dt, c("date", "open", "high", "low", "close", "volume", "close_adj", "symbol"))
+# PRICE DATA --------------------------------------------------------------
+# Import QC daily data
+prices = fread("F:/lean/data/stocks_daily.csv")
+setnames(prices, gsub(" ", "_", c(tolower(colnames(prices)))))
 
-# remove duplicates
-dt = unique(dt, by = c("symbol", "date"))
+# Remove duplicates
+prices = unique(prices, by = c("symbol", "date"))
 
-# remove missing values
-dt = na.omit(dt)
+# Remove duplicates - there are same for different symbols (eg. phun and phun.1)
+dups = prices[, .(symbol , n = .N),
+              by = .(date, open, high, low, close, volume, adj_close,
+                     symbol_first = substr(symbol, 1, 1))]
+dups = dups[n > 1]
+dups[, symbol_short := gsub("\\.\\d$", "", symbol)]
+symbols_remove = dups[, .(symbol, n = .N),
+                      by = .(date, open, high, low, close, volume, adj_close,
+                             symbol_short)]
+symbols_remove[n >= 2, unique(symbol)]
+symbols_remove = symbols_remove[n >= 2, unique(symbol)]
+symbols_remove = symbols_remove[grepl("\\.", symbols_remove)]
+prices = prices[symbol %notin% symbols_remove]
 
-# order data
-setorder(dt, "symbol", "date")
+# Adjust all columns
+prices[, adj_rate := adj_close / close]
+prices[, let(
+  open = open*adj_rate,
+  high = high*adj_rate,
+  low = low*adj_rate
+)]
+setnames(prices, "close", "close_raw")
+setnames(prices, "adj_close", "close")
+prices[, let(adj_rate = NULL)]
+setcolorder(prices, c("symbol", "date", "open", "high", "low", "close", "volume"))
 
-# adjust all prices, not just close
-adjust_cols <- c("open", "high", "low")
-adjust_cols_new <- c("open_adj", "high_adj", "low_adj")
-dt[, (adjust_cols_new) := lapply(.SD, function(x) x * (close_adj / close)), .SDcols = adjust_cols] # adjust open, high and low prices
+# Remove observations where open, high, low, close columns are below 1e-008
+# This step is opional, we need it if we will use finfeatures package
+prices = prices[open > 1e-008 & high > 1e-008 & low > 1e-008 & close > 1e-008]
 
-# calculate returns
-dt[, returns := close_adj / shift(close_adj) - 1, by = symbol] # calculate returns
-dt <- dt[returns < 1] # TODO:: better outlier detection mechanism. For now, remove daily returns above 100%
+# Remove missing values
+prices = na.omit(prices)
 
-# plot
-plot(as.xts.data.table(dt[symbol == "aapl", .(date, close_adj)]))
-plot(as.xts.data.table(dt[symbol == "meta", .(date, close_adj)]))
-plot(as.xts.data.table(dt[symbol == "fb", .(date, close_adj)]))
+# Keep only symbol with at least 2 years of data
+# This step is optional
+symbol_keep = prices[, .N, symbol][N >= 2 * 252, symbol]
+prices = prices[symbol %chin% symbol_keep]
 
-# check for zero prices
-dt[close_adj == 0] # there is not zero prices
-dt = dt[close > 0 & close_adj > 0]
-
-# remove symobls with < 252 observations
-dt_n <- dt[, .N, by = symbol]
-dt_n <- dt_n[N > 252 * 4]
-dt <- dt[symbol %in% dt_n[, symbol]]
+# Sort
+setorder(prices, symbol, date)
 
 # save SPY for later and keep only events symbols
-spy <- dt[symbol == "spy"]
+spy = prices[symbol == "spy"]
 
+# free memory
+gc()
+
+
+# PREPARE DATA FOR SEASONALITY ANALYSIS -----------------------------------
+# Calculate return
+prices[, returns := close / shift(close) - 1, by = symbol] # calculate returns
+
+# Remove outliers
+nrow(prices[returns > 1]) / nrow(prices)
+prices = prices[returns < 1] # TODO:: better outlier detection mechanism. For now, remove daily returns above 100%
+
+# define target variables
+prices[, return_day := shift(close, 1, type = "lead") / close - 1, by = symbol]
+prices[, return_day3 := shift(close, 3, type = "lead") / close - 1, by = symbol]
+prices[, return_week := shift(close, 5, type = "lead") / close - 1, by = symbol]
+prices[, return_week2 := shift(close, 10, type = "lead") / close - 1, by = symbol]
+
+# define frequency unit
+prices[, yearmonthid := yearmon(date)]
+prices[, day_of_month := 1:.N, by = .(symbol, yearmonthid)]
+prices[, day_of_month := as.factor(day_of_month)]
+
+# Remove missing values and select columns we need
+dt = na.omit(prices, cols = c("symbol", "return_week2", "day_of_month"))
+
+# Structure of dates
+dt[, .N, by = day_of_month] # we probbably want to turn 23 to 22
+dt[day_of_month == 23, day_of_month := 22] # 23 day to 22 day
+dt[day_of_month == 22, day_of_month := 21] # not sure about this but lets fo with it
+
+# Remove symbols with  less than 750 observations (3 years of data)
+symbols_keep = dt[, .N, by = symbol]
+symbols_keep = symbols_keep[N >= 750, symbol]
+dt = dt[symbol %in% symbols_keep]
 
 
 # SEASONALITY MINING ------------------------------------------------------
-# define target variables
-dt[, return_day := shift(close_adj, 1, type = "lead") / close_adj - 1, by = symbol]
-dt[, return_day3 := shift(close_adj, 3, type = "lead") / close_adj - 1, by = symbol]
-dt[, return_week := shift(close_adj, 5, type = "lead") / close_adj - 1, by = symbol]
-dt[, return_week2 := shift(close_adj, 10, type = "lead") / close_adj - 1, by = symbol]
+# define all year-months and start year
+yearmonthids = dt[, sort(unique(yearmonthid))]
+end_dates = seq.Date(as.Date("2019-01-01"), dt[, max(date)], by = "month")
+end_dates = as.IDate(end_dates)
 
-# define frequency unit
-dt[, yearmonthid := round(date, digits = "month")]
-dt[, day_of_month := 1:.N, by = .(symbol, yearmonthid)]
-dt[, day_of_month := as.factor(day_of_month)]
+# Remove symbols inactive before first date. This can  produce survivorship bias,
+# but we will be faster. If this doesn't work, it want work with all data fro sure.
+symbols_keep = dt[, (end_dates[1] - max(date)) < 7, by = symbol] # we must have at least 7 days of data
+dt = dt[symbol %in% symbols_keep[V1 == TRUE, symbol]]
 
-# remove missing values
-dt = na.omit(dt, cols = c("symbol", "return_week2", "day_of_month"))
-
-# get coeffs from summary of quantile regression
+# Get coeffs from summary of quantile regression
 get_coeffs = function(df, y = "return_week") {
-  # df = dt[symbol == "a.1"]
   res = rq(as.formula(paste0(y, " ~ day_of_month")), data = as.data.frame(df))
   summary_fit = summary.rq(res, se = 'nid')
   as.data.table(summary_fit$coefficients, keep.rownames = TRUE)
 }
 
-# define all year-months and start year
-yearmonthids = dt[, sort(unique(yearmonthid))]
-end_years = seq.Date(as.Date("2019-01-01"),
-                     as.Date("2023-05-01"), by = "month")
-end_years = as.character(end_years)
-# first_year = "2010-01-01"
+# Sample data - this is just for test
+dt_sample = dt[symbol %in% dt[, sample(unique(symbol), 10)]]
 
-# get median regression coefficients
-# symbols = dt[, unique(symbol)]
-# sample_ = dt[symbol %in% symbols[1:20000]]
-dt[day_of_month == 23, day_of_month := 22] # 23 day to 22 day
-dt_sample = dt[, .SD[(as.IDate(end_years[1])-max(date)) < 7], by = symbol] # we must have
-dt_sample = dt_sample[, .SD[nrow(.SD) > 1008], by = symbol] # we must have at least 3 yers of data
-
-# dt_sample[, year := year(date)]
-X_seasons_day3 = dt_sample[, lapply(as.IDate(end_years), function(y) {
-  if ((y - max(date)) > 7) return(list(NA))
-  tryCatch(list(get_coeffs(.SD[yearmonthid %between% c(y - 2520, y)]), "return_day3"),
+# get median regression coefficients - experiment
+sample_size_days = 2520
+seasonality_results = dt[, lapply(end_dates, function(date_) {
+  if ((date_ - max(date)) > 7) return(list(NA))
+  # print(date_ - sample_size_days)
+  # get_coeffs(.SD[yearmonthid %between% c(yearmon(y - sample_size_days), yearmon(y))])
+  tryCatch(list(get_coeffs(.SD[yearmonthid %between% c(yearmon(date_ - sample_size_days), yearmon(date_))])),
            error = function(e) list(NA))
-  }), by = .(symbol)]
-
-cols = paste0("month", strftime(end_years, format = "%y%m%d"))
-colnames(X_seasons_day3)[2:length(colnames(X_seasons_day3))] = cols
+  }), by = symbol]
+cols = paste0("month", strftime(end_dates, format = "%y%m%d"))
+colnames(seasonality_results)[2:length(colnames(seasonality_results))] = cols
 
 # save
 time = strftime(Sys.time(), "%Y%m%d%H%M%S")
-saveRDS(X_seasons_day3, file.path("D:/features", paste0("seasonality-day3", time, ".rds")))
+saveRDS(seasonality_results, file.path("D:/features", paste0("seasonality-week", time, ".rds")))
+
+# Import data
+
+
+# INSPECT RESULTS ---------------------------------------------------------
+# seasonality_results[1, month190101]
 
 
 # CREATE PORTFOLIOS -------------------------------------------------------
-# create portfolio function
+# Portfolio 1 - keep min Pr for every symbol
 portfolios_l = list()
 for (i in seq_along(cols)) {
 
   # sample
   col = cols[i]
   cols_ = c("symbol", col)
-  x = X_seasons[, ..cols_]
+  x = seasonality_results[, ..cols_]
 
   # remove missing values
   x[, number_of_rows := vapply(get(col), function(y) length(y), FUN.VALUE = integer(1L))]
@@ -144,7 +186,7 @@ for (i in seq_along(cols)) {
   # sample
   col = cols[i]
   cols_ = c("symbol", col)
-  x = X_seasons[, ..cols_]
+  x = seasonality_results[, ..cols_]
 
   # remove missing values
   x[, number_of_rows := vapply(get(col), function(y) length(y), FUN.VALUE = integer(1L))]
@@ -179,7 +221,7 @@ for (i in seq_along(cols)) {
   # sample
   col = cols[i]
   cols_ = c("symbol", col)
-  x = X_seasons[, ..cols_]
+  x = seasonality_results[, ..cols_]
 
   # remove missing values
   x[, number_of_rows := vapply(get(col), function(y) length(y), FUN.VALUE = integer(1L))]
@@ -211,12 +253,14 @@ portfolio3[, Value := 1]
 
 # clean portfolios
 portfolio_prepare = function(portfolio) {
+  # portfolio = copy(portfolio1)
+
   # set trading dates
-  portfolio[, date := as.Date(gsub("month", "", date), format = "%y%m%d")]
+  # portfolio[, date := as.Date(gsub("month", "", date), format = "%y%m%d")]
   portfolio[, rn := gsub("day_of_month", "", rn)]
 
   # get trading days
-  date_ = portfolio[, date]
+  date_ = portfolio[, as.Date(paste0(gsub("month", "", date), "01"), format = "%y%m%d")]
   seq_ = 1:nrow(portfolio)
   seq_dates = lapply(date_, function(x) getBusinessDays(x, x %m+% months(1) - 1))
   dates = mapply(function(x, y) x[y], x = seq_dates, y = portfolio[, as.integer(rn)])

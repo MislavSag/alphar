@@ -22,7 +22,7 @@ trade_details = function(bt.results, prices)
 
 # IMPORT DATA -------------------------------------------------------------
 # import hour data
-dt = fread("F:/lean_root/data/all_stocks_hour.csv")
+dt = fread("F:/lean/data/stocks_hour.csv")
 col = c("time", "open", "high", "low", "close", "volume", "close_adj", "symbol")
 setnames(dt, col)
 
@@ -69,6 +69,7 @@ symbols_ = dt[, unique(symbol)]
 "time" %in% symbols_
 "open" %in% symbols_
 "low" %in% symbols_
+dt = dt[symbol %notin% c("open", "low")]
 
 
 # BACKTEST WITH BTEST -----------------------------------------------------
@@ -123,6 +124,7 @@ active <- data.frame(instrument = colnames(P),
                      end = timestamp[last_block_start_indices])
 active[instrument == "hrmn", ]
 active$end = floor_time(active$end, unit = "month") %m-% months(1) - days(1)
+
 
 # crate all envs again
 P = P[paste0("/", max(active$end), " 00:00:00")]

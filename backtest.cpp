@@ -20,6 +20,24 @@ double backtest_cpp_gpt(NumericVector returns, NumericVector indicator, double t
   return cum_returns - 1; // Adjust for initial value
 }
 
+// [[Rcpp::export]]
+double backtest_sell_below_threshold(NumericVector returns, NumericVector indicator, double threshold) {
+  int n = indicator.size();
+  NumericVector sides(n, 1.0); // Initialize with 1s
+
+  for(int z = 1; z < n; ++z) { // Start from 1 since we look back one period
+    if(!NumericVector::is_na(indicator[z-1]) && indicator[z-1] < threshold) {
+      sides[z] = 0;
+    }
+  }
+
+  double cum_returns = 1.0; // Start cumulative returns at 1
+  for(int z = 0; z < n; ++z) {
+    cum_returns *= (1 + returns[z] * sides[z]);
+  }
+  return cum_returns - 1; // Adjust for initial value
+}
+
 DataFrame cbind_scalar_and_df(double x, DataFrame df) {
   // Get the number of rows in the DataFrame
   int n = df.nrows();
@@ -110,6 +128,54 @@ NumericVector opt(DataFrame df, DataFrame params) {
 }
 
 // [[Rcpp::export]]
+NumericVector calculate_sma(NumericVector x, int n) {
+  int size = x.size();
+  NumericVector sma(size);
+  double sum = 0.0;
+
+  for(int i = 0; i < size; i++) {
+    sum += x[i];
+    if (i >= n) {
+      sum -= x[i - n];
+    }
+    if (i >= n - 1) {
+      sma[i] = sum / n;
+    } else {
+      sma[i] = NA_REAL;  // Not enough data points to calculate SMA
+    }
+  }
+
+  return sma;
+}
+
+// [[Rcpp::export]]
+NumericVector opt_with_sma(DataFrame df, DataFrame params) {
+
+  // Define help variables
+  int n_params = params.nrow();
+  NumericVector returns = df["returns"];
+  CharacterVector indicators = params["variable"];
+  NumericVector thresholds = params["thresholds"];
+  NumericVector sma_n = params["sma_n"];
+
+  // return 1;
+  // Loop through all params rows and calculate the backtest results
+  NumericVector results(n_params);
+  for(int i = 0; i < n_params; ++i) {
+    String ind_ = indicators[i];
+    NumericVector indicator_ = df[ind_];
+    int sma_n_ = sma_n[i];
+
+    // Calculate SMA for the current indicator
+    NumericVector sma_indicator_ = calculate_sma(indicator_, sma_n_);
+
+    results[i] = backtest_sell_below_threshold(returns, sma_indicator_, thresholds[i]);
+  }
+
+  return results;
+}
+
+// [[Rcpp::export]]
 List wfo(DataFrame df,
          DataFrame params,
          int window,
@@ -160,3 +226,57 @@ List wfo(DataFrame df,
 
   return results;
 }
+
+// [[Rcpp::export]]
+List wfo_with_sma(DataFrame df,
+                  DataFrame params,
+                  int window,
+                  std::string window_type = "rolling") {
+
+  // Define help variables
+  int n = df.nrow();
+  NumericVector time = df["time"];
+  // NumericVector returns = df["returns"];
+  // CharacterVector indicators = params["variable"];
+  // NumericVector thresholds = params["thresholds"];
+  // NumericVector sma_n = params["sma_n"];
+
+  // Check if window size is valid relative to data size
+  if (window > n) {
+    stop("Window size exceeds available data.");
+  }
+
+  List results;
+  if (window_type == "expanding") {
+    results = List(n - window + 1);  // Start at the minimum window size
+  } else {
+    results = List(n - window + 1);
+  }
+
+  // Loop over data
+  for(int i = 0; i < results.size(); ++i) {
+
+    DataFrame df_window;
+
+    // Before processing each window, ensure the indices are valid
+    if (i + window - 1 < df.nrow()) {
+      if (window_type == "expanding") {
+        df_window = sliceDataFrameColumnWise(df, 0, i + window - 1);
+      } else {  // "rolling"
+        df_window = sliceDataFrameColumnWise(df, i, i + window - 1);
+      }
+    } else {
+      Rcpp::Rcout << "Skipping window " << i << " due to index out of range." << std::endl;
+      continue;
+    }
+
+    NumericVector sr = opt_with_sma(df_window, params);
+
+    // Bind time and results
+    int time_index = (window_type == "expanding") ? i + window - 1 : i + window - 1;
+    results[i] = bind_scalar_and_vector_to_df(time[time_index], sr);
+  }
+
+  return results;
+}
+

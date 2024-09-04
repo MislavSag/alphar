@@ -171,9 +171,10 @@ backtest = function(uni,
   # DEBUG
   # uni[, .(symbol, date, date_month, target)][date_month == as.Date("2024-01-31")]
   if (ret_sharpe) {
-    uni = uni[, .(ret = sum(target * (1 / length(target)))), by = date_month]
-    # sr = PerformanceAnalytics::SharpeRatio(as.xts.data.table(uni))
-    sr = PerformanceAnalytics::SortinoRatio(as.xts.data.table(uni))
+    uni[, weight := 1 / length(target), by = date_month]
+    uni = uni[, .(ret = sum(target * weight)), by = date_month]
+    sr = PerformanceAnalytics::SharpeRatio(as.xts.data.table(uni))
+    # sr = PerformanceAnalytics::SortinoRatio(as.xts.data.table(uni))
     # sr = Return.annualized(as.xts.data.table(uni))
     return(sr[1, ])
   } else {
@@ -181,11 +182,11 @@ backtest = function(uni,
   }
 }
 params = expand.grid(
-  eps_thresh = c(-100, 0),         # min EPS to include stock in universe
+  eps_thresh = c(-100, 0),         # min EPS to include stock in universe. -100 means all.
   close_raw_thresh = c(1, 10, 20), # min price to include stock in universe
   epsg_thresh = c(100, 200, 500),  # how many stocks to possibly include in universe
   return_mom = cols[c(1, 6, 12)],  # return period to calculate to identify mean reversion
-  eps_n = cols_epsg[c(1, 3, 6)],   # number of months to calculate EPS SD
+  eps_n = cols_epsg[c(1, 3, 6, 9)],# number of months to calculate EPS SD
   mom_n = c(10, 20, 50),           # number of stocks to include in universe
   coarse_n = c(1000, 2000),        # number of stocks to include in coarse universe
   rev_positive = c(TRUE, FALSE),   # include only stocks with positive revenue growth
@@ -204,7 +205,7 @@ results[ind_]
 # Check best backtest
 best_ = backtest(universe, params[ind_, 1], params[ind_, 2], params[ind_, 3],
                   params[ind_, 4], params[ind_, 5], params[ind_, 6],
-                 params[ind_, 7], FALSE)
+                 params[ind_, 7], params[ind_, 8], FALSE)
 best_ret = best_[, .(ret = sum(target * (1 / length(target)))), by = date_month]
 best_xts = as.xts.data.table(best_ret[, .(date_month, ret)])
 Return.annualized(best_xts)

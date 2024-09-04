@@ -10,6 +10,8 @@ library(runner)
 library(glue)
 library(tsDyn)
 library(AzureStor)
+library(gausscov)
+library(readr)
 # library(vars)
 # library(ggplot2)
 
@@ -639,8 +641,6 @@ charts.PerformanceSummary(backtest_xts)
 
 
 # ROLLING GAUSSCOV --------------------------------------------------------
-library(gausscov)
-
 # Prepare data
 dt = copy(backtest_data)
 dt[, y := shift(close, n = 1, type = "lead") / close - 1]
@@ -716,6 +716,7 @@ dates = f1st_res_dt[, unique(date)]
 min_date = dt[, min(date)]
 predictions = vector("numeric", length(dates))
 for (i in seq_along(dates)) {
+  # i = 1000
   sample_dt = dt[date %between% c(min_date, dates[i]),
                  .SD,
                  .SDcols = c("y", na.omit(f1st_res_dt[date == dates[i]]$cols))]
@@ -730,19 +731,23 @@ predictions_dt = merge(dt[, .(date, close)], predictions_dt, by = "date")
 # Backtest
 predictions_dt[, signal := predictions > 0]
 predictions_dt[, spy := close / shift(close) - 1]
-predictions_dt[, strategy := spy * shift(signal)]
+predictions_dt[, strategy := spy * shift(signal, 1)]
+predictions_dt = predictions_dt[date > as.Date("2002-10-01")] # to match QC backtest
 backtest_xts = as.xts.data.table(predictions_dt[, .(date, spy, strategy)])
 charts.PerformanceSummary(backtest_xts)
-charts.PerformanceSummary(backtest_xts[35000:nrow(backtest_xts)])
+# charts.PerformanceSummary(backtest_xts[35000:nrow(backtest_xts)])
+# charts.PerformanceSummary(backtest_xts[2180:nrow(backtest_xts)]) # same as QC
 
 # Save for QC backtesting
 qc_data = predictions_dt[, .(date, signal)]
 qc_data = na.omit(qc_data)
-qc_data[, date := as.character(date)]
+qc_data[, let(
+  date = as.character(date),
+  signal = as.integer(signal)
+)]
 bl_endp_key = storage_endpoint(Sys.getenv("BLOB-ENDPOINT-SNP"), Sys.getenv("BLOB-KEY-SNP"))
 cont = storage_container(bl_endp_key, "qc-backtest")
 storage_write_csv(qc_data, cont, "exuber_gausscov.csv", col_names = FALSE)
-
 
 
 # TVAR --------------------------------------------------------------------
@@ -888,8 +893,8 @@ tvar_backtest <- function(tvar_res_i) {
       sides[i] <- 0
     } else if (indicator[i-1] > threshold_1[i-1] & coef_ret_1_middle[i-1] < 0 & coef_ret_2_middle[i-1] < 0) {
       sides[i] <- 0
-    # } else if (indicator[i-1] < threshold_1[i-1] & coef_ret_1_down[i-1] < 0 & coef_ret_2_down[i-1] < 0 & coef_ret_3_down[i-1] < 0) {
-    #   sides[i] <- 0
+      # } else if (indicator[i-1] < threshold_1[i-1] & coef_ret_1_down[i-1] < 0 & coef_ret_2_down[i-1] < 0 & coef_ret_3_down[i-1] < 0) {
+      #   sides[i] <- 0
     } else {
       sides[i] <- 1
     }
