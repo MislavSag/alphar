@@ -9,3 +9,5 @@ risks
 token.rds
 mlmodels
 tmp
+commits_*
+prices*

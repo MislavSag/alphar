@@ -1,0 +1,4 @@
+- source: implied_volatility_term_structure.qmd
+  quarto-pub:
+    - id: 7e25a907-2f0d-458f-a37c-171d195d8fa8
+      url: 'https://mislav.quarto.pub/implied-volatility-term-structure-as-a-predictor-of-equity-options-returns'

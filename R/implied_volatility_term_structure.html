@@ -1,0 +1,1132 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.5.47">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Implied Volatility Term Structure as a predictor of equity options returns</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="implied_volatility_term_structure_files/libs/clipboard/clipboard.min.js"></script>
+<script src="implied_volatility_term_structure_files/libs/quarto-html/quarto.js"></script>
+<script src="implied_volatility_term_structure_files/libs/quarto-html/popper.min.js"></script>
+<script src="implied_volatility_term_structure_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="implied_volatility_term_structure_files/libs/quarto-html/anchor.min.js"></script>
+<link href="implied_volatility_term_structure_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="implied_volatility_term_structure_files/libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="implied_volatility_term_structure_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="implied_volatility_term_structure_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="implied_volatility_term_structure_files/libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+<link href="implied_volatility_term_structure_files/libs/htmltools-fill-0.5.8.1/fill.css" rel="stylesheet">
+
+<script src="implied_volatility_term_structure_files/libs/htmlwidgets-1.6.4/htmlwidgets.js"></script>
+
+<link href="implied_volatility_term_structure_files/libs/datatables-css-0.0.0/datatables-crosstalk.css" rel="stylesheet">
+
+<script src="implied_volatility_term_structure_files/libs/datatables-binding-0.33/datatables.js"></script>
+
+<script src="implied_volatility_term_structure_files/libs/jquery-3.6.0/jquery-3.6.0.min.js"></script>
+
+<link href="implied_volatility_term_structure_files/libs/dt-core-1.13.6/css/jquery.dataTables.min.css" rel="stylesheet">
+
+<link href="implied_volatility_term_structure_files/libs/dt-core-1.13.6/css/jquery.dataTables.extra.css" rel="stylesheet">
+
+<script src="implied_volatility_term_structure_files/libs/dt-core-1.13.6/js/jquery.dataTables.min.js"></script>
+
+<link href="implied_volatility_term_structure_files/libs/crosstalk-1.2.1/css/crosstalk.min.css" rel="stylesheet">
+
+<script src="implied_volatility_term_structure_files/libs/crosstalk-1.2.1/js/crosstalk.min.js"></script>
+
+
+  <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js" type="text/javascript"></script>
+
+<script type="text/javascript">
+const typesetMath = (el) => {
+  if (window.MathJax) {
+    // MathJax Typeset
+    window.MathJax.typeset([el]);
+  } else if (window.katex) {
+    // KaTeX Render
+    var mathElements = el.getElementsByClassName("math");
+    var macros = [];
+    for (var i = 0; i < mathElements.length; i++) {
+      var texText = mathElements[i].firstChild;
+      if (mathElements[i].tagName == "SPAN") {
+        window.katex.render(texText.data, mathElements[i], {
+          displayMode: mathElements[i].classList.contains('display'),
+          throwOnError: false,
+          macros: macros,
+          fleqn: false
+        });
+      }
+    }
+  }
+}
+window.Quarto = {
+  typesetMath
+};
+</script>
+
+</head>
+
+<body class="fullcontent">
+
+<div id="quarto-content" class="page-columns page-rows-contents page-layout-article">
+
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title">Implied Volatility Term Structure as a predictor of equity options returns</h1>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<section id="terminology" class="level2">
+<h2 class="anchored" data-anchor-id="terminology">Terminology</h2>
+<p><strong>Implied Volatility (IV):</strong> This is the market’s forecast of the future volatility of the underlying asset, inferred from the prices of options. It represents the uncertainty or risk perceived by the market participants.</p>
+<p><strong>Term Structure:</strong> Refers to how implied volatility changes across different option expirations (maturities). For example, options expiring in 1 month might have a different implied volatility compared to those expiring in 6 months. When you plot implied volatilities across maturities, the resulting curve is called the <strong>implied volatility term structure (IVTS)</strong>. The authors are investigating whether IVTS characteristics (slope, curvature, shifts) reveal valuable information about future market conditions or option prices.</p>
+<p><strong>Term structure of equity volatility:</strong> same as above.</p>
+<p><strong>Jump probability</strong> refers to the likelihood of sudden, significant price changes (or “jumps”) in the underlying asset (e.g., a stock or index). These jumps are beyond what standard continuous-time models, like the Black-Scholes framework, can predict.</p>
+<p><strong>Time-varying</strong> means this probability is not constant but changes over time based on market conditions, news, sentiment, or other factors.</p>
+<p><strong>ATM Straddle Implied Volatility</strong>: Average of the implied volatilities of call and put options at-the-money (?).</p>
+</section>
+<section id="literature" class="level2">
+<h2 class="anchored" data-anchor-id="literature">Literature</h2>
+<p>Main paper is <a href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2871616" target="_blank">Jump Risk and Option Returns</a> by Jim Campasano and Matthew Linn.</p>
+<p>In a recent study, Heston et al.&nbsp;(2023) analyze option return predictors from the literature and show SLOPE and IV RVSLOPE to be “the two strongest predictors” of returns.</p>
+</section>
+<section id="alpha-variables" class="level2">
+<h2 class="anchored" data-anchor-id="alpha-variables">Alpha variables</h2>
+<p><strong>SLOPE</strong></p>
+<ul>
+<li><p>Defined using option-implied volatilities to estimate both <strong>short-term</strong> and <strong>long-term volatility</strong>.</p></li>
+<li><p>Prior research (Vasquez, 2017) identifies it as a robust predictor of future option returns.</p></li>
+<li><p>The implied volatility term structure slope (SLOPE), is defined using long-term and short term (one month) implied volatility, IVLT and IV1M respectively. SLOPE is given by</p></li>
+</ul>
+<p><span class="math display">\[
+SLOPE=(IV_{LT}-IV_{1M})/IV_{LT}
+\]</span></p>
+<ul>
+<li>Short-term implied volatility, <span class="math inline">\(IV_{1M}\)</span>, is defined as the at-the-money (ATM) straddle implied volatility with a maturity closest to one month. Long-term implied volatility, <span class="math inline">\(IV_{LT}\)</span> is the implied volatility of the ATM straddle with the shortest maturity of at least six months. Authors allow flexibility for the long term maturity since an equity may not have six month options listed due to its calendar listing cycle</li>
+<li>This ex-ante measure forecasts transitory jump activity. Since SLOPE only predicts jumps in the near future, returns of short maturity option portfolios are increasing with SLOPE, as they do with the IVRVSLOPE portfolios. However, for portfolios constructed using three through six month options, returns are decreasing in SLOPE.</li>
+</ul>
+<p><strong>IVRV SLOPE</strong></p>
+<ul>
+<li><p>Combines <strong>implied volatility (IV)</strong> for short-term volatility and <strong>realized volatility (RV)</strong> for long-term volatility (measured from historical data).</p></li>
+<li><p>Previous research (Goyal and Saretto, 2009) demonstrates its effectiveness in predicting option strategy returns. However, the authors of that study did not explicitly classify it as a volatility term structure measure.</p></li>
+</ul>
+</section>
+<section id="alpha-discovery" class="level2">
+<h2 class="anchored" data-anchor-id="alpha-discovery">Alpha Discovery</h2>
+<p>In portfolios formed weekly by sorting on term structure slope, we find a significant difference in both total and idiosyncratic jump frequency between the first and last quintiles.</p>
+</section>
+<section id="results" class="level2">
+<h2 class="anchored" data-anchor-id="results">Results</h2>
+<p>We show when term structure slope is low, or downward sloping (short term volatility is high relative to long term volatility), jump probability is high. In fact, volatility term structure is a better predictor of stock jumps than previously proposed indicators in the literature.</p>
+</section>
+<section id="data" class="level2">
+<h2 class="anchored" data-anchor-id="data">Data</h2>
+<ul>
+<li><p>Daily equity prices (source Quantconnect)</p></li>
+<li><p>Equity Options Data (source ORATS)</p></li>
+</ul>
+</section>
+<section id="code" class="level2">
+<h2 class="anchored" data-anchor-id="code">Code</h2>
+<section id="setup" class="level3">
+<h3 class="anchored" data-anchor-id="setup">Setup</h3>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(fastverse)</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(DT)</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(tinyplot)</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(finutils)</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(PerformanceAnalytics)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+</section>
+<section id="data-1" class="level3">
+<h3 class="anchored" data-anchor-id="data-1">Data</h3>
+<section id="daily-ohlcv-data" class="level4">
+<h4 class="anchored" data-anchor-id="daily-ohlcv-data">1) Daily OHLCV data</h4>
+<p>I use Quantconnect dailydata for all stocks from 199.8 to today. I will use finutils package to import data in one line of code</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb2"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Import data</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>prices <span class="ot">=</span> <span class="fu">qc_daily</span>(</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">file_path =</span> <span class="st">"F:/lean/data/stocks_daily.csv"</span>,</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">price_threshold =</span> <span class="fl">1e-8</span>,</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">min_obs =</span> <span class="dv">252</span>,</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">market_symbol =</span> <span class="cn">NULL</span>,</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">symbols =</span> <span class="cn">NULL</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a><span class="co"># Be aware the key is set</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a><span class="fu">key</span>(prices)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>[1] "symbol"</code></pre>
+</div>
+</div>
+<section id="isnpect-and-calculate-addiional-variables" class="level5">
+<h5 class="anchored" data-anchor-id="isnpect-and-calculate-addiional-variables">Isnpect and calculate addiional variables</h5>
+<p>Let’s glimpse the data:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb4"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">dim</span>(prices)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>[1] 50040445        9</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb6"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span>(prices)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Key: &lt;symbol&gt;
+   symbol       date     open     high      low    close   volume close_raw
+   &lt;char&gt;     &lt;IDat&gt;    &lt;num&gt;    &lt;num&gt;    &lt;num&gt;    &lt;num&gt;    &lt;i64&gt;     &lt;num&gt;
+1:      a 1999-11-19 25.90827 25.94447 24.01975 24.55071 10687600     40.69
+2:      a 1999-11-22 24.92479 26.02291 24.17059 25.98067  4369400     43.06
+3:      a 1999-11-23 25.64279 26.32459 24.28523 24.36367  4033700     40.38
+4:      a 1999-11-24 24.21283 25.30491 24.13439 24.73775  3477800     41.00
+5:      a 1999-11-26 24.66535 25.03943 24.58691 24.73775  1196500     41.00
+6:      a 1999-11-29 24.73775 25.60659 24.47227 25.30491  2827400     41.94
+       returns
+         &lt;num&gt;
+1: -0.04123468
+2:  0.05824527
+3: -0.06223874
+4:  0.01535414
+5:  0.00000000
+6:  0.02292683</code></pre>
+</div>
+</div>
+<p>We need to calculate yearly realized volatility. From the paper, realized volatility (RVLT) is calculated as the twelve-month realized volatility derived from the daily closing prices of the underlying equity. This provides a historical measure of volatility based on actual price movements</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Calculate returns</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>prices[, returns <span class="sc">:</span><span class="er">=</span> close <span class="sc">/</span> <span class="fu">shift</span>(close) <span class="sc">-</span> <span class="dv">1</span>, by <span class="ot">=</span> symbol]</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Rolling 12-month realized volatility (252 trading days)</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>prices[, RVLT <span class="sc">:</span><span class="er">=</span> <span class="fu">frollsum</span>(returns<span class="sc">^</span><span class="dv">2</span>, <span class="at">n =</span> <span class="dv">252</span>), by <span class="ot">=</span> symbol]</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>Lets plot realized volatilies for sample of stocks using tinyplot</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>prices[symbol <span class="sc">%in%</span> prices[, <span class="fu">sample</span>(<span class="fu">unique</span>(symbol), <span class="dv">4</span>)]] <span class="sc">|&gt;</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>  <span class="co"># na.omit(_) |&gt;</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>  <span class="fu">plt</span>(RVLT <span class="sc">~</span> date <span class="sc">|</span> symbol, <span class="at">data =</span> _)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<div>
+<figure class="figure">
+<p><img src="implied_volatility_term_structure_files/figure-html/unnamed-chunk-5-1.png" class="img-fluid figure-img" width="672"></p>
+</figure>
+</div>
+</div>
+</div>
+</section>
+</section>
+<section id="options-data" class="level4">
+<h4 class="anchored" data-anchor-id="options-data">2) Options data</h4>
+<p>We are going to use ORATS options data. Here we explain all columns<br>
+</p>
+<div class="cell">
+<div class="cell-output-display">
+<div class="datatables html-widget html-fill-item" id="htmlwidget-ab27ce8264c067304caa" style="width:100%;height:auto;"></div>
+<script type="application/json" data-for="htmlwidget-ab27ce8264c067304caa">{"x":{"filter":"none","vertical":false,"caption":"<caption>Option Data Definitions<\/caption>","data":[["ticker","stkPx","expirDate","yte","strike","cVolu","cOi","pVolu","pOi","cBidPx","cValue","cAskPx","pBidPx","pValue","pAskPx","cBidIv","cAskIv","smoothSmvVol","pBidIv","pMidIv","pAskIv","iRate","divRate","residualRateData","delta","gamma","theta","vega","rho","phi","driftlessTheta","extVol","extCTheo","extPTheo","spot_px","trade_date"],["The underlying symbol that represents the stock or index on which the option is based.","The current price of the underlying stock. For indexes, this is the solved implied futures price for each expiration.","The date on which the option expires.","The number of years remaining until the option's expiration date.","The price at which the option can be exercised.","The total number of call option contracts traded on a particular day total at the time observed.","The total number of outstanding call option contracts updated by OCC the night before.","The total number of put option contracts traded on a particular day total at the time observed.","The total number of outstanding put option contracts updated by OCC the night before.","The NBBO price at which a market maker is willing to buy a call option.","The theoretical value of a call option based on a smooth volatility assumption.","The NBBO price at which a market maker is willing to sell a call option.","The NBBO price at which a market maker is willing to buy a put option.","The theoretical value of a put option based on a smooth volatility assumption.","The NBBO price at which a market maker is willing to sell a put option.","The implied volatility of a call option at the current NBBO bid price.","The implied volatility of a call option at the current NBBO ask price.","The smoothed implied volatility of an option based on the ORATS model.","The implied volatility of a put option at the current NBBO bid price.","The implied volatility of a put option at the midpoint of the current NBBO bid and ask prices.","The implied volatility of a put option at the current NBBO ask price.","The continuous interest (risk-free) rate.","The continuous dividend yield of discrete dividend's NPV.","The implied interest rate that is derived from the option pricing model.","The theoretical increase in an option's price due to a one dollar increase in the underlying price.","The rate of change of an option's delta with respect to a one dollar increase in the price of the underlying asset.","The rate of time decay of an option's value for one day.","The sensitivity of an option's price to a one percent rise in the implied volatility of the option.","The sensitivity of an option's price to a one percent increase in interest rates for the option.","A measure of the convexity of an option's price with respect to changes in the price of the underlying asset.","The rate of time decay of an option's value as the expiration date approaches, without taking into account the drift in the price of the underlying asset.","The external implied volatility of the underlying asset, as provided by an external data source. The external data source is from the ORATS forecast volatility.","The external theoretical value of a call option, as provided by an external data source.","The external theoretical value of a put option, as provided by an external data source.","The current market price of the underlying asset. For indexes this is the cash price.","The date on which the option was traded."]],"container":"<table class=\"display\">\n  <thead>\n    <tr>\n      <th>Variable<\/th>\n      <th>Description<\/th>\n    <\/tr>\n  <\/thead>\n<\/table>","options":{"pageLength":40,"columnDefs":[{"name":"Variable","targets":0},{"name":"Description","targets":1}],"order":[],"autoWidth":false,"orderClasses":false,"lengthMenu":[10,25,40,50,100]}},"evals":[],"jsHooks":[]}</script>
+</div>
+</div>
+<p>I have daily options data from 2007 to 2024. This data is really big, but we don’t need most of the data. That is, in the paper the authors use 5 filter steps to extract only options contracts we need for analysis</p>
+<p>To save RAM, we will import zipped cav files and do analysis for every file separetly. This is slower, but I wil allows us to import more data.</p>
+<p>TODO: Save ziped csv files in parquet database with symbol as index and import using arrow package.</p>
+<p>First, lets create filtering function:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb10"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Filtering process in the paper:</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="co"># For both implied volatility measures we use ATM straddle implied volatilities </span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a><span class="co"># computed as the average volatility of the put and call options closest to </span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a><span class="co"># at-the-money which survive the following filters: </span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a><span class="co"># (1) The underlying equity has a closing price of at least $10; </span></span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a><span class="co"># (2) The option price must not violate arbitrage conditions; </span></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a><span class="co"># (3) The option must have a non-zero bid; </span></span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a><span class="co"># (4) The absolute value of the delta must be between 0.35 and 0.65; and </span></span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a><span class="co"># (5) The implied volatility must be between 3% and 200%.</span></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a>filter_options <span class="ot">=</span> <span class="cf">function</span>(dt) {</span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a>  <span class="co"># apply filter 1</span></span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>  dt <span class="ot">=</span> dt[stkPx <span class="sc">&gt;</span> <span class="dv">10</span>]</span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a>  <span class="co"># apply filter 2</span></span>
+<span id="cb10-15"><a href="#cb10-15" aria-hidden="true" tabindex="-1"></a>  dt <span class="ot">=</span> dt[<span class="fu">abs</span>(cBidPx <span class="sc">-</span> cAskPx) <span class="sc">&gt;</span> <span class="dv">0</span>]</span>
+<span id="cb10-16"><a href="#cb10-16" aria-hidden="true" tabindex="-1"></a>  dt <span class="ot">=</span> dt[<span class="fu">abs</span>(pBidPx <span class="sc">-</span> pAskPx) <span class="sc">&gt;</span> <span class="dv">0</span>]</span>
+<span id="cb10-17"><a href="#cb10-17" aria-hidden="true" tabindex="-1"></a>  <span class="co"># apply filter 3</span></span>
+<span id="cb10-18"><a href="#cb10-18" aria-hidden="true" tabindex="-1"></a>  dt <span class="ot">=</span> dt[cBidPx <span class="sc">&gt;</span> <span class="dv">0</span>]</span>
+<span id="cb10-19"><a href="#cb10-19" aria-hidden="true" tabindex="-1"></a>  dt <span class="ot">=</span> dt[pBidPx <span class="sc">&gt;</span> <span class="dv">0</span>]</span>
+<span id="cb10-20"><a href="#cb10-20" aria-hidden="true" tabindex="-1"></a>  <span class="co"># apply filter 4</span></span>
+<span id="cb10-21"><a href="#cb10-21" aria-hidden="true" tabindex="-1"></a>  dt <span class="ot">=</span> dt[<span class="fu">abs</span>(delta) <span class="sc">&gt;</span> <span class="fl">0.35</span> <span class="sc">&amp;</span> <span class="fu">abs</span>(delta) <span class="sc">&lt;</span> <span class="fl">0.65</span>]</span>
+<span id="cb10-22"><a href="#cb10-22" aria-hidden="true" tabindex="-1"></a>  <span class="co"># apply filter 5</span></span>
+<span id="cb10-23"><a href="#cb10-23" aria-hidden="true" tabindex="-1"></a>  dt <span class="ot">=</span> dt[cBidIv <span class="sc">&gt;</span> <span class="fl">0.3</span> <span class="sc">&amp;</span> cBidIv <span class="sc">&lt;</span> <span class="dv">2</span>]</span>
+<span id="cb10-24"><a href="#cb10-24" aria-hidden="true" tabindex="-1"></a>  dt <span class="ot">=</span> dt[pBidIv <span class="sc">&gt;</span> <span class="fl">0.3</span> <span class="sc">&amp;</span> pBidIv <span class="sc">&lt;</span> <span class="dv">2</span>]</span>
+<span id="cb10-25"><a href="#cb10-25" aria-hidden="true" tabindex="-1"></a>  </span>
+<span id="cb10-26"><a href="#cb10-26" aria-hidden="true" tabindex="-1"></a>  <span class="fu">return</span>(dt)</span>
+<span id="cb10-27"><a href="#cb10-27" aria-hidden="true" tabindex="-1"></a>}</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb11"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Get all paths for 2022 and 2023</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>paths <span class="ot">=</span> <span class="fu">paste0</span>(<span class="st">"F:/data/option/"</span>, <span class="dv">2022</span><span class="sc">:</span><span class="dv">2023</span>)</span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>files <span class="ot">=</span> <span class="fu">unlist</span>(<span class="fu">lapply</span>(paths, list.files, <span class="at">full.names =</span> <span class="cn">TRUE</span>))</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Read sample</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">=</span> <span class="fu">lapply</span>(files, <span class="cf">function</span>(x) <span class="fu">filter_options</span>(<span class="fu">fread</span>(x)))</span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>dt <span class="ot">=</span> <span class="fu">rbindlist</span>(dt)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>In the end, we keep only 100 percent of the data.</p>
+<p>We will do some preliminary data cleaning</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>dt[, <span class="fu">let</span>(</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">expirDate =</span> <span class="fu">as.IDate</span>(<span class="fu">as.Date</span>(expirDate, <span class="at">format =</span> <span class="st">"%m/%d/%Y"</span>)),</span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">trade_date =</span> <span class="fu">as.IDate</span>(<span class="fu">as.Date</span>(trade_date, <span class="at">format =</span> <span class="st">"%m/%d/%Y"</span>))</span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a>)]</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<section id="data-summary" class="level5">
+<h5 class="anchored" data-anchor-id="data-summary">Data Summary</h5>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb13"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Dimension of the dataset</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="fu">dim</span>(dt)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>[1] 13599974       39</code></pre>
+</div>
+<div class="sourceCode cell-code" id="cb15"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Data summary</span></span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span>(dt)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>   ticker             cOpra             pOpra  stkPx  expirDate     yte strike
+   &lt;char&gt;            &lt;char&gt;            &lt;char&gt;  &lt;num&gt;     &lt;IDat&gt;   &lt;num&gt;  &lt;num&gt;
+1:      A  A220218C00140000  A220218P00140000 144.03 2022-02-18 0.10685  140.0
+2:     AA AA220114C00060000 AA220114P00060000  61.23 2022-01-14 0.01096   60.0
+3:     AA AA220114C00061000 AA220114P00061000  61.23 2022-01-14 0.01096   61.0
+4:     AA AA220114C00061500 AA220114P00061500  61.23 2022-01-14 0.01096   61.5
+5:     AA AA220114C00062000 AA220114P00062000  61.23 2022-01-14 0.01096   62.0
+6:     AA AA220114C00062500 AA220114P00062500  61.23 2022-01-14 0.01096   62.5
+   cVolu   cOi pVolu   pOi cBidPx cValue cAskPx pBidPx pValue pAskPx   cBidIv
+   &lt;int&gt; &lt;int&gt; &lt;int&gt; &lt;int&gt;  &lt;num&gt;  &lt;num&gt;  &lt;num&gt;  &lt;num&gt;  &lt;num&gt;  &lt;num&gt;    &lt;num&gt;
+1:    33    71    15   289   7.90   7.98   8.50   4.00   4.15   4.40 0.308659
+2:   230   649   978   278   2.24   2.26   2.29   1.00   1.03   1.08 0.613790
+3:   321  3484  1775  1081   1.65   1.68   1.73   1.43   1.46   1.50 0.601720
+4:   465   429    73    65   1.40   1.44   1.48   1.68   1.72   1.78 0.598715
+5:   307   521   219   214   1.19   1.22   1.25   1.95   2.00   2.06 0.601839
+6:   922   425    97   115   0.99   1.03   1.06   2.25   2.32   2.36 0.597937
+    cMidIv   cAskIv smoothSmvVol   pBidIv  pMidIv   pAskIv iRate divRate
+     &lt;num&gt;    &lt;num&gt;        &lt;num&gt;    &lt;num&gt;   &lt;num&gt;    &lt;num&gt; &lt;num&gt;   &lt;int&gt;
+1: 0.32536 0.342057     0.310192 0.310595 0.32172 0.332847 1e-03       0
+2: 0.62426 0.634724     0.611958 0.604037 0.62078 0.637525 5e-04       0
+3: 0.61738 0.633042     0.594798 0.600294 0.61400 0.627697 5e-04       0
+4: 0.61432 0.629921     0.591949 0.597247 0.61675 0.636255 5e-04       0
+5: 0.61362 0.625392     0.592819 0.592399 0.61403 0.635654 5e-04       0
+6: 0.61232 0.626708     0.596942 0.588078 0.61069 0.633296 5e-04       0
+   residualRateData    delta      gamma       theta       vega        rho
+              &lt;num&gt;    &lt;num&gt;      &lt;num&gt;       &lt;num&gt;      &lt;num&gt;      &lt;num&gt;
+1:         0.007700 0.627332 0.02607208 -0.06961229 0.17969282 0.07600601
+2:         0.021898 0.635243 0.09619159 -0.18272713 0.02389595 0.00350722
+3:         0.021898 0.535183 0.10457446 -0.18808818 0.02555310 0.00306396
+4:         0.021898 0.482723 0.10539033 -0.18792918 0.02564644 0.00279475
+5:         0.021898 0.430992 0.10384031 -0.18587545 0.02500484 0.00252863
+6:         0.021898 0.381895 0.09995523 -0.18155821 0.02433824 0.00226874
+           phi driftlessTheta   extVol extCTheo extPTheo spot_px trade_date
+         &lt;num&gt;          &lt;num&gt;   &lt;char&gt;   &lt;char&gt;   &lt;char&gt;   &lt;num&gt;     &lt;IDat&gt;
+1: -0.08261834    -0.07098985 0.329374  8.27217  4.33758      NA 2022-01-10
+2: -0.00370305    -0.18466128 0.566776   2.1277 0.910967      NA 2022-01-10
+3: -0.00321249    -0.18975873 0.560262   1.5441  1.32774      NA 2022-01-10
+4: -0.00292226    -0.18944466 0.558286  1.29635  1.58012      NA 2022-01-10
+5: -0.00263760    -0.18723932 0.557227  1.07827  1.86217      NA 2022-01-10
+6: -0.00236265    -0.18277623  0.55706  0.89056  2.17455      NA 2022-01-10</code></pre>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb17"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="co"># # Plot call bid prices</span></span>
+<span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="co"># dt_ = dt_raw[ticker == "AAPL"][1:1000]</span></span>
+<span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a><span class="co"># plt(~ cBidPx | cOpra, data = dt_)</span></span>
+<span id="cb17-4"><a href="#cb17-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb17-5"><a href="#cb17-5" aria-hidden="true" tabindex="-1"></a><span class="co"># # Histogram of implied volatilities using tinyplot</span></span>
+<span id="cb17-6"><a href="#cb17-6" aria-hidden="true" tabindex="-1"></a><span class="co"># plt(~ cBidIv, data = dt_raw)</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+</section>
+<section id="atm-options" class="level5">
+<h5 class="anchored" data-anchor-id="atm-options">ATM options</h5>
+<p><strong>1. Identify ATM Options:</strong></p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb18"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Add a column for the absolute difference between strike and spot price</span></span>
+<span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a>dt[, atm_diff <span class="sc">:</span><span class="er">=</span> <span class="fu">abs</span>(strike <span class="sc">-</span> stkPx)]</span>
+<span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-4"><a href="#cb18-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Find ATM options (minimum atm_diff for each ticker, date, and expiration)</span></span>
+<span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>atm_options <span class="ot">=</span> dt[, .SD[<span class="fu">which.min</span>(atm_diff)], by <span class="ot">=</span> .(ticker, trade_date, expirDate)]</span>
+<span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb18-7"><a href="#cb18-7" aria-hidden="true" tabindex="-1"></a><span class="co"># Inspect the ATM options</span></span>
+<span id="cb18-8"><a href="#cb18-8" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span>(atm_options)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>   ticker trade_date  expirDate             cOpra             pOpra  stkPx
+   &lt;char&gt;     &lt;IDat&gt;     &lt;IDat&gt;            &lt;char&gt;            &lt;char&gt;  &lt;num&gt;
+1:      A 2022-01-10 2022-02-18  A220218C00140000  A220218P00140000 144.03
+2:     AA 2022-01-10 2022-01-14 AA220114C00061000 AA220114P00061000  61.23
+3:     AA 2022-01-10 2022-01-21 AA220121C00061000 AA220121P00061000  61.23
+4:     AA 2022-01-10 2022-01-28 AA220128C00061000 AA220128P00061000  61.23
+5:     AA 2022-01-10 2022-02-04 AA220204C00061000 AA220204P00061000  61.23
+6:     AA 2022-01-10 2022-02-11 AA220211C00061000 AA220211P00061000  61.23
+       yte strike cVolu   cOi pVolu   pOi cBidPx cValue cAskPx pBidPx pValue
+     &lt;num&gt;  &lt;num&gt; &lt;int&gt; &lt;int&gt; &lt;int&gt; &lt;int&gt;  &lt;num&gt;  &lt;num&gt;  &lt;num&gt;  &lt;num&gt;  &lt;num&gt;
+1: 0.10685    140    33    71    15   289   7.90   7.98   8.50   4.00   4.15
+2: 0.01096     61   321  3484  1775  1081   1.65   1.68   1.73   1.43   1.46
+3: 0.03014     61   171   101   157   214   3.10   3.18   3.25   2.94   2.97
+4: 0.04932     61    21    84    11   114   3.60   3.67   3.75   3.45   3.51
+5: 0.06849     61    19    54     5     6   4.00   4.11   4.20   3.90   3.99
+6: 0.08767     61     2    27     7    13   4.20   4.50   4.95   4.25   4.40
+   pAskPx   cBidIv  cMidIv   cAskIv smoothSmvVol   pBidIv  pMidIv   pAskIv
+    &lt;num&gt;    &lt;num&gt;   &lt;num&gt;    &lt;num&gt;        &lt;num&gt;    &lt;num&gt;   &lt;num&gt;    &lt;num&gt;
+1:   4.40 0.308659 0.32536 0.342057     0.310192 0.310595 0.32172 0.332847
+2:   1.50 0.601720 0.61738 0.633042     0.594798 0.600294 0.61400 0.627697
+3:   2.99 0.706360 0.72411 0.741858     0.714345 0.718903 0.72482 0.730735
+4:   3.60 0.650480 0.66438 0.678275     0.663821 0.651327 0.66522 0.679122
+5:   4.15 0.616294 0.63203 0.647763     0.635236 0.621801 0.64147 0.661139
+6:   4.55 0.573665 0.62588 0.678086     0.618117 0.597290 0.61817 0.639052
+   iRate divRate residualRateData    delta      gamma       theta       vega
+   &lt;num&gt;   &lt;int&gt;            &lt;num&gt;    &lt;num&gt;      &lt;num&gt;       &lt;num&gt;      &lt;num&gt;
+1: 1e-03       0         0.007700 0.627332 0.02607208 -0.06961229 0.17969282
+2: 5e-04       0         0.021898 0.535183 0.10457446 -0.18808818 0.02555310
+3: 5e-04       0         0.010196 0.535919 0.05251980 -0.13677636 0.04226873
+4: 5e-04       0        -0.006013 0.536092 0.04423520 -0.09766342 0.05397708
+5: 5e-04       0         0.000774 0.538335 0.03921672 -0.07910144 0.06356350
+6: 1e-03       0         0.004273 0.540539 0.03560476 -0.06787869 0.07184357
+          rho         phi driftlessTheta   extVol extCTheo extPTheo spot_px
+        &lt;num&gt;       &lt;num&gt;          &lt;num&gt;   &lt;char&gt;   &lt;char&gt;   &lt;char&gt;   &lt;num&gt;
+1: 0.07600601 -0.08261834    -0.07098985 0.329374  8.27217  4.33758      NA
+2: 0.00306396 -0.00321249    -0.18975873 0.560262   1.5441  1.32774      NA
+3: 0.00808576 -0.00887918    -0.13751960 0.663412  2.91848  2.70547      NA
+4: 0.01268554 -0.01414313    -0.09964303 0.627405  3.47545  3.32087      NA
+5: 0.01741289 -0.01967755    -0.08086781 0.610182  3.96114  3.82614      NA
+6: 0.02205152 -0.02522297    -0.06947532  0.59717  4.36891  4.24914      NA
+   atm_diff
+      &lt;num&gt;
+1:     4.03
+2:     0.23
+3:     0.23
+4:     0.23
+5:     0.23
+6:     0.23</code></pre>
+</div>
+</div>
+<p><strong>2.Calculate ATM Straddle Implied Volatility</strong></p>
+<p>Use the average implied volatilities of the call and put for each ATM option:</p>
+<p><span class="math display">\[ATMIV=\frac{CallIV(cMidIv)+PutIV(pMidIv)}{2}\]</span></p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb20"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Calculate ATM straddle implied volatility using ORATS data</span></span>
+<span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>atm_options[, atm_iv <span class="sc">:</span><span class="er">=</span> (cMidIv <span class="sc">+</span> pMidIv) <span class="sc">/</span> <span class="dv">2</span>]</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p><strong>3. Define</strong> <span class="math inline">\(IV_{1M}\)</span> and <span class="math inline">\(IV_{LT}\)</span></p>
+<ul>
+<li>Short-Term (<span class="math inline">\(IV_{1M}\)</span>): Closest to 30 days to expiration. This implies finding the option with the shortest time-to-expiry in the range of approximately 0–60 days.</li>
+<li>Long-Term (<span class="math inline">\(IV_{LT}\)</span>): Maturity of at least 180 days (allow flexibility for options with maturities slightly greater than 6 months).</li>
+</ul>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb21"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Step 1: Calculate days to expiration</span></span>
+<span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>atm_options[, days_to_expiry <span class="sc">:</span><span class="er">=</span> yte <span class="sc">*</span> <span class="dv">365</span>]</span>
+<span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-4"><a href="#cb21-4" aria-hidden="true" tabindex="-1"></a><span class="co"># Step 2: Filter and calculate short-term IV (nearest to 1 month, 0–60 days)</span></span>
+<span id="cb21-5"><a href="#cb21-5" aria-hidden="true" tabindex="-1"></a>short_term_iv <span class="ot">=</span> atm_options[</span>
+<span id="cb21-6"><a href="#cb21-6" aria-hidden="true" tabindex="-1"></a>  days_to_expiry <span class="sc">&gt;</span> <span class="dv">0</span> <span class="sc">&amp;</span> days_to_expiry <span class="sc">&lt;=</span> <span class="dv">60</span>,  <span class="co"># Short-term filter</span></span>
+<span id="cb21-7"><a href="#cb21-7" aria-hidden="true" tabindex="-1"></a>  .SD[<span class="fu">which.min</span>(<span class="fu">abs</span>(days_to_expiry <span class="sc">-</span> <span class="dv">30</span>))],  <span class="co"># Closest to 30 days</span></span>
+<span id="cb21-8"><a href="#cb21-8" aria-hidden="true" tabindex="-1"></a>  by <span class="ot">=</span> .(ticker, trade_date)  <span class="co"># Group by ticker and trade_date</span></span>
+<span id="cb21-9"><a href="#cb21-9" aria-hidden="true" tabindex="-1"></a>]</span>
+<span id="cb21-10"><a href="#cb21-10" aria-hidden="true" tabindex="-1"></a>long_term_iv <span class="ot">=</span> atm_options[</span>
+<span id="cb21-11"><a href="#cb21-11" aria-hidden="true" tabindex="-1"></a>  days_to_expiry <span class="sc">&gt;=</span> <span class="dv">180</span>,  <span class="co"># Long-term filter</span></span>
+<span id="cb21-12"><a href="#cb21-12" aria-hidden="true" tabindex="-1"></a>  .SD[<span class="fu">which.min</span>(days_to_expiry)],  <span class="co"># Shortest maturity ≥ 180 days</span></span>
+<span id="cb21-13"><a href="#cb21-13" aria-hidden="true" tabindex="-1"></a>  by <span class="ot">=</span> .(ticker, trade_date)  <span class="co"># Group by ticker and trade_date</span></span>
+<span id="cb21-14"><a href="#cb21-14" aria-hidden="true" tabindex="-1"></a>]</span>
+<span id="cb21-15"><a href="#cb21-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb21-16"><a href="#cb21-16" aria-hidden="true" tabindex="-1"></a><span class="co"># Ste 3: Merge short-term and long-term IVs</span></span>
+<span id="cb21-17"><a href="#cb21-17" aria-hidden="true" tabindex="-1"></a>iv_data <span class="ot">=</span> <span class="fu">merge</span>(short_term_iv, long_term_iv, <span class="at">by =</span> <span class="fu">c</span>(<span class="st">"ticker"</span>, <span class="st">"trade_date"</span>),</span>
+<span id="cb21-18"><a href="#cb21-18" aria-hidden="true" tabindex="-1"></a>                <span class="at">suffixes =</span> <span class="fu">c</span>(<span class="st">"_short"</span>, <span class="st">"_long"</span>))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+</section>
+</section>
+<section id="merge-data" class="level4">
+<h4 class="anchored" data-anchor-id="merge-data">3) Merge data</h4>
+<p><strong>4. Merge short-term and long-term IVs</strong></p>
+<p>Merge short-term and long-term IV values to compute SLOPE and other measures</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb22"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb22-1"><a href="#cb22-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Keep only necessary columns for further analysis</span></span>
+<span id="cb22-2"><a href="#cb22-2" aria-hidden="true" tabindex="-1"></a>iv_data_simplified <span class="ot">=</span> iv_data[, .(</span>
+<span id="cb22-3"><a href="#cb22-3" aria-hidden="true" tabindex="-1"></a>  ticker,</span>
+<span id="cb22-4"><a href="#cb22-4" aria-hidden="true" tabindex="-1"></a>  trade_date,</span>
+<span id="cb22-5"><a href="#cb22-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">IV1M =</span> atm_iv_short,    <span class="co"># Rename short-term IV</span></span>
+<span id="cb22-6"><a href="#cb22-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">IVLT =</span> atm_iv_long      <span class="co"># Rename long-term IV</span></span>
+<span id="cb22-7"><a href="#cb22-7" aria-hidden="true" tabindex="-1"></a>)]</span>
+<span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a><span class="co"># Calculate SLOPE</span></span>
+<span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a>iv_data_simplified[, SLOPE <span class="sc">:</span><span class="er">=</span> (IVLT <span class="sc">-</span> IV1M) <span class="sc">/</span> IVLT]</span>
+<span id="cb22-11"><a href="#cb22-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-12"><a href="#cb22-12" aria-hidden="true" tabindex="-1"></a><span class="co"># SEt key to make merge faster</span></span>
+<span id="cb22-13"><a href="#cb22-13" aria-hidden="true" tabindex="-1"></a><span class="fu">setkey</span>(iv_data_simplified, ticker)</span>
+<span id="cb22-14"><a href="#cb22-14" aria-hidden="true" tabindex="-1"></a><span class="fu">setorder</span>(iv_data_simplified, ticker, trade_date)</span>
+<span id="cb22-15"><a href="#cb22-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-16"><a href="#cb22-16" aria-hidden="true" tabindex="-1"></a><span class="co"># Merge realized volatility</span></span>
+<span id="cb22-17"><a href="#cb22-17" aria-hidden="true" tabindex="-1"></a>iv_data_simplified <span class="ot">=</span> <span class="fu">merge</span>(</span>
+<span id="cb22-18"><a href="#cb22-18" aria-hidden="true" tabindex="-1"></a>  iv_data_simplified,</span>
+<span id="cb22-19"><a href="#cb22-19" aria-hidden="true" tabindex="-1"></a>  prices[, .(<span class="at">symbol =</span> <span class="fu">toupper</span>(symbol), date, RVLT)],</span>
+<span id="cb22-20"><a href="#cb22-20" aria-hidden="true" tabindex="-1"></a>  <span class="at">by.x =</span> <span class="fu">c</span>(<span class="st">"ticker"</span>, <span class="st">"trade_date"</span>),</span>
+<span id="cb22-21"><a href="#cb22-21" aria-hidden="true" tabindex="-1"></a>  <span class="at">by.y =</span> <span class="fu">c</span>(<span class="st">"symbol"</span>, <span class="st">"date"</span>),</span>
+<span id="cb22-22"><a href="#cb22-22" aria-hidden="true" tabindex="-1"></a>  <span class="at">all.x =</span> <span class="cn">TRUE</span>,</span>
+<span id="cb22-23"><a href="#cb22-23" aria-hidden="true" tabindex="-1"></a>  <span class="at">all.y =</span> <span class="cn">FALSE</span></span>
+<span id="cb22-24"><a href="#cb22-24" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb22-25"><a href="#cb22-25" aria-hidden="true" tabindex="-1"></a>  </span>
+<span id="cb22-26"><a href="#cb22-26" aria-hidden="true" tabindex="-1"></a><span class="co"># Order</span></span>
+<span id="cb22-27"><a href="#cb22-27" aria-hidden="true" tabindex="-1"></a><span class="fu">setorder</span>(iv_data_simplified, ticker, trade_date)</span>
+<span id="cb22-28"><a href="#cb22-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb22-29"><a href="#cb22-29" aria-hidden="true" tabindex="-1"></a><span class="co"># View simplified dataset</span></span>
+<span id="cb22-30"><a href="#cb22-30" aria-hidden="true" tabindex="-1"></a><span class="fu">print</span>(iv_data_simplified)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Key: &lt;ticker, trade_date&gt;
+        ticker trade_date     IV1M     IVLT        SLOPE       RVLT
+        &lt;char&gt;     &lt;IDat&gt;    &lt;num&gt;    &lt;num&gt;        &lt;num&gt;      &lt;num&gt;
+     1:      A 2022-01-25 0.390670 0.330305 -0.182755332 0.04621174
+     2:      A 2022-01-27 0.366205 0.332535 -0.101252500 0.04414007
+     3:      A 2022-02-04 0.327770 0.326445 -0.004058877 0.04589349
+     4:      A 2022-02-07 0.347680 0.336025 -0.034684919 0.04591825
+     5:      A 2022-02-14 0.358285 0.326190 -0.098393574 0.04764913
+    ---                                                            
+364685:   ZYXI 2023-04-14 0.698145 0.696695 -0.002081255 0.44454488
+364686:   ZYXI 2023-04-21 0.680925 0.739640  0.079383213 0.43854113
+364687:   ZYXI 2023-04-24 0.633015 0.637500  0.007035294 0.43782468
+364688:   ZYXI 2023-04-28 0.557335 0.630735  0.116372169 0.43795786
+364689:   ZYXI 2023-05-02 0.646455 0.626925 -0.031152052 0.45904903</code></pre>
+</div>
+</div>
+<p>In below analysis I dicoverd some very large values for RVLT. It looks like error so I decided to delete extreme values here.</p>
+<p>First, let;s list symbols that have very large RVTL values</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb24"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb24-1"><a href="#cb24-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Identify tickers with very large RVTL values</span></span>
+<span id="cb24-2"><a href="#cb24-2" aria-hidden="true" tabindex="-1"></a>tickers_outliers <span class="ot">=</span> iv_data_simplified[, .(<span class="at">have_outlier =</span> <span class="fu">any</span>(RVLT <span class="sc">&gt;</span> <span class="dv">10</span>, <span class="at">na.rm =</span> <span class="cn">TRUE</span>)), </span>
+<span id="cb24-3"><a href="#cb24-3" aria-hidden="true" tabindex="-1"></a>                                      by <span class="ot">=</span> ticker]</span>
+<span id="cb24-4"><a href="#cb24-4" aria-hidden="true" tabindex="-1"></a>tickers_outliers <span class="ot">=</span> tickers_outliers[have_outlier <span class="sc">==</span> <span class="cn">TRUE</span>, ticker]</span>
+<span id="cb24-5"><a href="#cb24-5" aria-hidden="true" tabindex="-1"></a>tickers_outliers</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code> [1] "AADI" "AMC"  "APP"  "CBL"  "DO"   "DWAC" "GEN"  "NE"   "PATH" "SLNO"
+[11] "TXMD"</code></pre>
+</div>
+</div>
+<p>Let’s plot RVLT of one symbol:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb26"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb26-1"><a href="#cb26-1" aria-hidden="true" tabindex="-1"></a><span class="fu">plt</span>(RVLT <span class="sc">~</span> trade_date, <span class="at">data =</span> iv_data_simplified[ticker <span class="sc">==</span> <span class="st">"DO"</span>])</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<div>
+<figure class="figure">
+<p><img src="implied_volatility_term_structure_files/figure-html/unnamed-chunk-17-1.png" class="img-fluid figure-img" width="672"></p>
+</figure>
+</div>
+</div>
+</div>
+<p>Let’s see close price too</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb27"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="fu">plt</span>(close <span class="sc">~</span> date, <span class="at">data =</span> prices[symbol <span class="sc">==</span> <span class="st">"do"</span>])</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<div>
+<figure class="figure">
+<p><img src="implied_volatility_term_structure_files/figure-html/unnamed-chunk-18-1.png" class="img-fluid figure-img" width="672"></p>
+</figure>
+</div>
+</div>
+</div>
+<p>Obviously, there is an error in this symbol. We will remove all this symbols. There are 11 such symbols (out of 3301)</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb28"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a>iv_data_simplified <span class="ot">=</span> iv_data_simplified[ticker <span class="sc">%notin%</span> tickers_outliers]</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div class="callout callout-style-default callout-important callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Check symbols in daily prices code!: “APP” “CBL” “NE” “GEN” “PATH” “AADI” “DO” “SLNO” “DWAC” “TXMD” “AMC”
+</div>
+</div>
+<div class="callout-body-container callout-body">
+
+</div>
+</div>
+</section>
+</section>
+<section id="descriptive-and-summary-statistics" class="level3">
+<h3 class="anchored" data-anchor-id="descriptive-and-summary-statistics">Descriptive and summary statistics</h3>
+<p>Let’s start with some basic summary statistics</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb29"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb29-1"><a href="#cb29-1" aria-hidden="true" tabindex="-1"></a>iv_data_simplified[, .(</span>
+<span id="cb29-2"><a href="#cb29-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">start_date =</span> <span class="fu">min</span>(trade_date),</span>
+<span id="cb29-3"><a href="#cb29-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">end_date =</span> <span class="fu">max</span>(trade_date),</span>
+<span id="cb29-4"><a href="#cb29-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">number_of_observations =</span> .N,</span>
+<span id="cb29-5"><a href="#cb29-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">unique_tickers =</span> <span class="fu">length</span>(<span class="fu">unique</span>(ticker))</span>
+<span id="cb29-6"><a href="#cb29-6" aria-hidden="true" tabindex="-1"></a>)]</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>   start_date   end_date number_of_observations unique_tickers
+       &lt;IDat&gt;     &lt;IDat&gt;                  &lt;int&gt;          &lt;int&gt;
+1: 2022-01-10 2023-12-29                 363168           3290</code></pre>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb31"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb31-1"><a href="#cb31-1" aria-hidden="true" tabindex="-1"></a>mean_ <span class="ot">=</span> <span class="fu">transpose</span>(iv_data_simplified[, .(</span>
+<span id="cb31-2"><a href="#cb31-2" aria-hidden="true" tabindex="-1"></a>  <span class="at">SLOPE =</span> <span class="fu">round</span>(<span class="fu">mean</span>(SLOPE, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-3"><a href="#cb31-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">IV1M =</span> <span class="fu">round</span>(<span class="fu">mean</span>(IV1M, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-4"><a href="#cb31-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">IVLT =</span> <span class="fu">round</span>(<span class="fu">mean</span>(IVLT, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-5"><a href="#cb31-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">RVLT =</span> <span class="fu">round</span>(<span class="fu">mean</span>(RVLT, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>)</span>
+<span id="cb31-6"><a href="#cb31-6" aria-hidden="true" tabindex="-1"></a>)], <span class="at">keep.names =</span> <span class="st">"Variable"</span>)</span>
+<span id="cb31-7"><a href="#cb31-7" aria-hidden="true" tabindex="-1"></a><span class="fu">colnames</span>(mean_)[<span class="dv">2</span>] <span class="ot">=</span> <span class="st">"mean"</span></span>
+<span id="cb31-8"><a href="#cb31-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-9"><a href="#cb31-9" aria-hidden="true" tabindex="-1"></a>max_ <span class="ot">=</span> <span class="fu">transpose</span>(iv_data_simplified[, .(</span>
+<span id="cb31-10"><a href="#cb31-10" aria-hidden="true" tabindex="-1"></a>  <span class="at">SLOPE =</span> <span class="fu">round</span>(<span class="fu">max</span>(SLOPE, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-11"><a href="#cb31-11" aria-hidden="true" tabindex="-1"></a>  <span class="at">IV1M =</span> <span class="fu">round</span>(<span class="fu">max</span>(IV1M, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-12"><a href="#cb31-12" aria-hidden="true" tabindex="-1"></a>  <span class="at">IVLT =</span> <span class="fu">round</span>(<span class="fu">max</span>(IVLT, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-13"><a href="#cb31-13" aria-hidden="true" tabindex="-1"></a>  <span class="at">RVLT =</span> <span class="fu">round</span>(<span class="fu">max</span>(RVLT, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>)</span>
+<span id="cb31-14"><a href="#cb31-14" aria-hidden="true" tabindex="-1"></a>)], <span class="at">keep.names =</span> <span class="st">"Variable"</span>)</span>
+<span id="cb31-15"><a href="#cb31-15" aria-hidden="true" tabindex="-1"></a><span class="fu">colnames</span>(max_)[<span class="dv">2</span>] <span class="ot">=</span> <span class="st">"max"</span></span>
+<span id="cb31-16"><a href="#cb31-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-17"><a href="#cb31-17" aria-hidden="true" tabindex="-1"></a>sd_ <span class="ot">=</span> <span class="fu">transpose</span>(</span>
+<span id="cb31-18"><a href="#cb31-18" aria-hidden="true" tabindex="-1"></a>  iv_data_simplified[, .(</span>
+<span id="cb31-19"><a href="#cb31-19" aria-hidden="true" tabindex="-1"></a>    <span class="at">SLOPE =</span> <span class="fu">round</span>(<span class="fu">sd</span>(SLOPE, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-20"><a href="#cb31-20" aria-hidden="true" tabindex="-1"></a>    <span class="at">IV1M =</span> <span class="fu">round</span>(<span class="fu">sd</span>(IV1M, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-21"><a href="#cb31-21" aria-hidden="true" tabindex="-1"></a>    <span class="at">IVLT =</span> <span class="fu">round</span>(<span class="fu">sd</span>(IVLT, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-22"><a href="#cb31-22" aria-hidden="true" tabindex="-1"></a>    <span class="at">RVLT =</span> <span class="fu">round</span>(<span class="fu">sd</span>(RVLT, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>))], <span class="at">keep.names =</span> <span class="st">"Variable"</span>)</span>
+<span id="cb31-23"><a href="#cb31-23" aria-hidden="true" tabindex="-1"></a><span class="fu">colnames</span>(sd_)[<span class="dv">2</span>] <span class="ot">=</span> <span class="st">"sd"</span></span>
+<span id="cb31-24"><a href="#cb31-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-25"><a href="#cb31-25" aria-hidden="true" tabindex="-1"></a>skew_ <span class="ot">=</span> <span class="fu">transpose</span>(iv_data_simplified[, .(</span>
+<span id="cb31-26"><a href="#cb31-26" aria-hidden="true" tabindex="-1"></a>  <span class="at">SLOPE =</span> <span class="fu">round</span>(<span class="fu">skewness</span>(SLOPE, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-27"><a href="#cb31-27" aria-hidden="true" tabindex="-1"></a>  <span class="at">IV1M =</span> <span class="fu">round</span>(<span class="fu">skewness</span>(IV1M, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-28"><a href="#cb31-28" aria-hidden="true" tabindex="-1"></a>  <span class="at">IVLT =</span> <span class="fu">round</span>(<span class="fu">skewness</span>(IVLT, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-29"><a href="#cb31-29" aria-hidden="true" tabindex="-1"></a>  <span class="at">RVLT =</span> <span class="fu">round</span>(<span class="fu">skewness</span>(RVLT, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>)</span>
+<span id="cb31-30"><a href="#cb31-30" aria-hidden="true" tabindex="-1"></a>)], <span class="at">keep.names =</span> <span class="st">"Variable"</span>)</span>
+<span id="cb31-31"><a href="#cb31-31" aria-hidden="true" tabindex="-1"></a><span class="fu">colnames</span>(skew_)[<span class="dv">2</span>] <span class="ot">=</span> <span class="st">"skew"</span></span>
+<span id="cb31-32"><a href="#cb31-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb31-33"><a href="#cb31-33" aria-hidden="true" tabindex="-1"></a>kurtosis_ <span class="ot">=</span> <span class="fu">transpose</span>(iv_data_simplified[, .(</span>
+<span id="cb31-34"><a href="#cb31-34" aria-hidden="true" tabindex="-1"></a>  <span class="at">SLOPE =</span> <span class="fu">round</span>(<span class="fu">kurtosis</span>(SLOPE, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-35"><a href="#cb31-35" aria-hidden="true" tabindex="-1"></a>  <span class="at">IV1M =</span> <span class="fu">round</span>(<span class="fu">kurtosis</span>(IV1M, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-36"><a href="#cb31-36" aria-hidden="true" tabindex="-1"></a>  <span class="at">IVLT =</span> <span class="fu">round</span>(<span class="fu">kurtosis</span>(IVLT, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>),</span>
+<span id="cb31-37"><a href="#cb31-37" aria-hidden="true" tabindex="-1"></a>  <span class="at">RVLT =</span> <span class="fu">round</span>(<span class="fu">kurtosis</span>(RVLT, <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="dv">2</span>)</span>
+<span id="cb31-38"><a href="#cb31-38" aria-hidden="true" tabindex="-1"></a>)], <span class="at">keep.names =</span> <span class="st">"Variable"</span>)</span>
+<span id="cb31-39"><a href="#cb31-39" aria-hidden="true" tabindex="-1"></a><span class="fu">colnames</span>(kurtosis_)[<span class="dv">2</span>] <span class="ot">=</span> <span class="st">"kurtosis"</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb32"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb32-1"><a href="#cb32-1" aria-hidden="true" tabindex="-1"></a>probs_ <span class="ot">=</span> <span class="fu">c</span>(<span class="fl">0.01</span>, <span class="fl">0.05</span>, <span class="fl">0.25</span>, <span class="fl">0.5</span>, <span class="fl">0.95</span>, <span class="fl">0.99</span>)</span>
+<span id="cb32-2"><a href="#cb32-2" aria-hidden="true" tabindex="-1"></a>q_ <span class="ot">=</span> <span class="fu">transpose</span>(iv_data_simplified[, .(</span>
+<span id="cb32-3"><a href="#cb32-3" aria-hidden="true" tabindex="-1"></a>  <span class="at">SLOPE =</span> <span class="fu">round</span>(<span class="fu">quantile</span>(SLOPE, <span class="at">na.rm =</span> <span class="cn">TRUE</span>, <span class="at">probs =</span> probs_), <span class="dv">2</span>),</span>
+<span id="cb32-4"><a href="#cb32-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">IV1M =</span> <span class="fu">round</span>(<span class="fu">quantile</span>(IV1M, <span class="at">na.rm =</span> <span class="cn">TRUE</span>, <span class="at">probs =</span> probs_), <span class="dv">2</span>),</span>
+<span id="cb32-5"><a href="#cb32-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">IVLT =</span> <span class="fu">round</span>(<span class="fu">quantile</span>(IVLT, <span class="at">na.rm =</span> <span class="cn">TRUE</span>, <span class="at">probs =</span> probs_), <span class="dv">2</span>),</span>
+<span id="cb32-6"><a href="#cb32-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">RVLT =</span> <span class="fu">round</span>(<span class="fu">quantile</span>(RVLT, <span class="at">na.rm =</span> <span class="cn">TRUE</span>, <span class="at">probs =</span> probs_), <span class="dv">2</span>)</span>
+<span id="cb32-7"><a href="#cb32-7" aria-hidden="true" tabindex="-1"></a>  )],</span>
+<span id="cb32-8"><a href="#cb32-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">keep.names =</span> <span class="st">"Variable"</span></span>
+<span id="cb32-9"><a href="#cb32-9" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb32-10"><a href="#cb32-10" aria-hidden="true" tabindex="-1"></a>names_ <span class="ot">=</span> <span class="fu">paste0</span>(<span class="st">"q"</span>, probs_<span class="sc">*</span><span class="dv">100</span>)</span>
+<span id="cb32-11"><a href="#cb32-11" aria-hidden="true" tabindex="-1"></a><span class="fu">colnames</span>(q_)[<span class="dv">2</span><span class="sc">:</span><span class="fu">ncol</span>(q_)] <span class="ot">=</span> names_</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb33"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb33-1"><a href="#cb33-1" aria-hidden="true" tabindex="-1"></a><span class="fu">Reduce</span>(<span class="cf">function</span>(x, y) <span class="fu">merge</span>(x, y, <span class="at">by =</span> <span class="st">"Variable"</span>), </span>
+<span id="cb33-2"><a href="#cb33-2" aria-hidden="true" tabindex="-1"></a>       <span class="fu">list</span>(mean_, sd_, skew_, kurtosis_, max_, q_))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>Key: &lt;Variable&gt;
+   Variable  mean    sd  skew kurtosis   max    q1    q5   q25   q50   q95
+     &lt;char&gt; &lt;num&gt; &lt;num&gt; &lt;num&gt;    &lt;num&gt; &lt;num&gt; &lt;num&gt; &lt;num&gt; &lt;num&gt; &lt;num&gt; &lt;num&gt;
+1:     IV1M  0.57  0.22  2.01     8.33  4.35  0.31  0.33  0.40  0.51  0.98
+2:     IVLT  0.54  0.19  1.57     4.39  2.27  0.31  0.33  0.40  0.50  0.89
+3:     RVLT  0.35  0.36  7.08    99.76  7.72  0.07  0.09  0.16  0.25  0.89
+4:    SLOPE -0.04  0.16 -2.22    22.42  0.67 -0.54 -0.30 -0.12 -0.03  0.16
+     q99
+   &lt;num&gt;
+1:  1.32
+2:  1.15
+3:  1.65
+4:  0.25</code></pre>
+</div>
+</div>
+<p>Kurtosis for the RVLT is very high. something we would not expect. Other values are expected I would say.</p>
+<p>I put here screenshot of summary statistics from the paper:</p>
+<p><img src="images/summary_jump_returns.png" class="img-fluid"></p>
+<p>It seems my statiscs are in general more volatile. For exmaple, much higher kurtosis for the slope.</p>
+<p>Implied volatilities are higher than mean volatilies in the paper, but this is expected because of different time period. We get negative slope, as in the paper, since mean <span class="math inline">\(IV_{1M} &gt; IV_{LT}\)</span>.</p>
+</section>
+</section>
+
+</main>
+<!-- /main column -->
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const onCopySuccess = function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  }
+  const getTextToCopy = function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+    text: getTextToCopy
+  });
+  clipboard.on('success', onCopySuccess);
+  if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+    // For code content inside modals, clipBoardJS needs to be initialized with a container option
+    // TODO: Check when it could be a function (https://github.com/zenorocha/clipboard.js/issues/860)
+    const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+      text: getTextToCopy,
+      container: window.document.getElementById('quarto-embedded-source-code-modal')
+    });
+    clipboardModal.on('success', onCopySuccess);
+  }
+    var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+    var mailtoRegex = new RegExp(/^mailto:/);
+      var filterRegex = new RegExp('/' + window.location.host + '/');
+    var isInternal = (href) => {
+        return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+    }
+    // Inspect non-navigation links and adorn them if external
+ 	var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+    for (var i=0; i<links.length; i++) {
+      const link = links[i];
+      if (!isInternal(link.href)) {
+        // undo the damage that might have been done by quarto-nav.js in the case of
+        // links that we want to consider external
+        if (link.dataset.originalHref !== undefined) {
+          link.href = link.dataset.originalHref;
+        }
+      }
+    }
+  function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+    const config = {
+      allowHTML: true,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start',
+    };
+    if (contentFn) {
+      config.content = contentFn;
+    }
+    if (onTriggerFn) {
+      config.onTrigger = onTriggerFn;
+    }
+    if (onUntriggerFn) {
+      config.onUntrigger = onUntriggerFn;
+    }
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      if (note) {
+        return note.innerHTML;
+      } else {
+        return "";
+      }
+    });
+  }
+  const xrefs = window.document.querySelectorAll('a.quarto-xref');
+  const processXRef = (id, note) => {
+    // Strip column container classes
+    const stripColumnClz = (el) => {
+      el.classList.remove("page-full", "page-columns");
+      if (el.children) {
+        for (const child of el.children) {
+          stripColumnClz(child);
+        }
+      }
+    }
+    stripColumnClz(note)
+    if (id === null || id.startsWith('sec-')) {
+      // Special case sections, only their first couple elements
+      const container = document.createElement("div");
+      if (note.children && note.children.length > 2) {
+        container.appendChild(note.children[0].cloneNode(true));
+        for (let i = 1; i < note.children.length; i++) {
+          const child = note.children[i];
+          if (child.tagName === "P" && child.innerText === "") {
+            continue;
+          } else {
+            container.appendChild(child.cloneNode(true));
+            break;
+          }
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(container);
+        }
+        return container.innerHTML
+      } else {
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        return note.innerHTML;
+      }
+    } else {
+      // Remove any anchor links if they are present
+      const anchorLink = note.querySelector('a.anchorjs-link');
+      if (anchorLink) {
+        anchorLink.remove();
+      }
+      if (window.Quarto?.typesetMath) {
+        window.Quarto.typesetMath(note);
+      }
+      // TODO in 1.5, we should make sure this works without a callout special case
+      if (note.classList.contains("callout")) {
+        return note.outerHTML;
+      } else {
+        return note.innerHTML;
+      }
+    }
+  }
+  for (var i=0; i<xrefs.length; i++) {
+    const xref = xrefs[i];
+    tippyHover(xref, undefined, function(instance) {
+      instance.disable();
+      let url = xref.getAttribute('href');
+      let hash = undefined; 
+      if (url.startsWith('#')) {
+        hash = url;
+      } else {
+        try { hash = new URL(url).hash; } catch {}
+      }
+      if (hash) {
+        const id = hash.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note !== null) {
+          try {
+            const html = processXRef(id, note.cloneNode(true));
+            instance.setContent(html);
+          } finally {
+            instance.enable();
+            instance.show();
+          }
+        } else {
+          // See if we can fetch this
+          fetch(url.split('#')[0])
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.getElementById(id);
+            if (note !== null) {
+              const html = processXRef(id, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      } else {
+        // See if we can fetch a full url (with no hash to target)
+        // This is a special case and we should probably do some content thinning / targeting
+        fetch(url)
+        .then(res => res.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const htmlDoc = parser.parseFromString(html, "text/html");
+          const note = htmlDoc.querySelector('main.content');
+          if (note !== null) {
+            // This should only happen for chapter cross references
+            // (since there is no id in the URL)
+            // remove the first header
+            if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+              note.children[0].remove();
+            }
+            const html = processXRef(null, note);
+            instance.setContent(html);
+          } 
+        }).finally(() => {
+          instance.enable();
+          instance.show();
+        });
+      }
+    }, function(instance) {
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            div.style.left = 0;
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+        // Handle positioning of the toggle
+    window.addEventListener(
+      "resize",
+      throttle(() => {
+        elRect = undefined;
+        if (selectedAnnoteEl) {
+          selectCodeLines(selectedAnnoteEl);
+        }
+      }, 10)
+    );
+    function throttle(fn, ms) {
+    let throttle = false;
+    let timer;
+      return (...args) => {
+        if(!throttle) { // first call gets through
+            fn.apply(this, args);
+            throttle = true;
+        } else { // all the others get throttled
+            if(timer) clearTimeout(timer); // cancel #2
+            timer = setTimeout(() => {
+              fn.apply(this, args);
+              timer = throttle = false;
+            }, ms);
+        }
+      };
+    }
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

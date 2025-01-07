@@ -1,0 +1,482 @@
+---
+title: "Implied Volatility Term Structure as a predictor of equity options returns"
+format: html
+editor: visual
+---
+
+## Terminology
+
+**Implied Volatility (IV):** This is the market's forecast of the future volatility of the underlying asset, inferred from the prices of options. It represents the uncertainty or risk perceived by the market participants.
+
+**Term Structure:** Refers to how implied volatility changes across different option expirations (maturities). For example, options expiring in 1 month might have a different implied volatility compared to those expiring in 6 months. When you plot implied volatilities across maturities, the resulting curve is called the **implied volatility term structure (IVTS)**. The authors are investigating whether IVTS characteristics (slope, curvature, shifts) reveal valuable information about future market conditions or option prices.
+
+**Term structure of equity volatility:** same as above.
+
+**Jump probability** refers to the likelihood of sudden, significant price changes (or "jumps") in the underlying asset (e.g., a stock or index). These jumps are beyond what standard continuous-time models, like the Black-Scholes framework, can predict.
+
+**Time-varying** means this probability is not constant but changes over time based on market conditions, news, sentiment, or other factors.
+
+**ATM Straddle Implied Volatility**: Average of the implied volatilities of call and put options at-the-money (?).
+
+## Literature
+
+Main paper is [Jump Risk and Option Returns](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2871616){target="_blank"} by Jim Campasano and Matthew Linn.
+
+In a recent study, Heston et al. (2023) analyze option return predictors from the literature and show SLOPE and IV RVSLOPE to be “the two strongest predictors” of returns.
+
+## Alpha variables
+
+**SLOPE**
+
+-   Defined using option-implied volatilities to estimate both **short-term** and **long-term volatility**.
+
+-   Prior research (Vasquez, 2017) identifies it as a robust predictor of future option returns.
+
+-   The implied volatility term structure slope (SLOPE), is defined using long-term and short term (one month) implied volatility, IVLT and IV1M respectively. SLOPE is given by
+
+$$
+SLOPE=(IV_{LT}-IV_{1M})/IV_{LT}
+$$
+
+-   Short-term implied volatility, $IV_{1M}$, is defined as the at-the-money (ATM) straddle implied volatility with a maturity closest to one month. Long-term implied volatility, $IV_{LT}$ is the implied volatility of the ATM straddle with the shortest maturity of at least six months. Authors allow flexibility for the long term maturity since an equity may not have six month options listed due to its calendar listing cycle
+-   This ex-ante measure forecasts transitory jump activity. Since SLOPE only predicts jumps in the near future, returns of short maturity option portfolios are increasing with SLOPE, as they do with the IVRVSLOPE portfolios. However, for portfolios constructed using three through six month options, returns are decreasing in SLOPE.
+
+**IVRV SLOPE**
+
+-   Combines **implied volatility (IV)** for short-term volatility and **realized volatility (RV)** for long-term volatility (measured from historical data).
+
+$$
+SLOPE=(IV_{RV}-IV_{1M})/IV_{RV}
+$$
+
+-   Previous research (Goyal and Saretto, 2009) demonstrates its effectiveness in predicting option strategy returns. However, the authors of that study did not explicitly classify it as a volatility term structure measure.
+
+## Alpha Discovery
+
+In portfolios formed weekly by sorting on term structure slope, we find a significant difference in both total and idiosyncratic jump frequency between the first and last quintiles.
+
+## Results
+
+We show when term structure slope is low, or downward sloping (short term volatility is high relative to long term volatility), jump probability is high. In fact, volatility term structure is a better predictor of stock jumps than previously proposed indicators in the literature.
+
+## Data
+
+-   Daily equity prices (source Quantconnect)
+
+-   Equity Options Data (source ORATS)
+
+## Code
+
+### Setup
+
+```{r}
+#| warning: false
+
+library(fastverse)
+library(DT)
+library(tinyplot)
+library(finutils)
+library(PerformanceAnalytics)
+```
+
+### Data
+
+#### 1) Daily OHLCV data
+
+I use Quantconnect dailydata for all stocks from 199.8 to today. I will use finutils package to import data in one line of code
+
+```{r}
+# Import data
+prices = qc_daily(
+  file_path = "F:/lean/data/stocks_daily.csv",
+  price_threshold = 1e-8,
+  min_obs = 252,
+  market_symbol = NULL,
+  symbols = NULL
+)
+
+# Be aware the key is set
+key(prices)
+```
+
+##### Isnpect and calculate addiional variables
+
+Let's glimpse the data:
+
+```{r}
+dim(prices)
+head(prices)
+```
+
+We need to calculate yearly realized volatility. From the paper, realized volatility (RVLT) is calculated as the twelve-month realized volatility derived from the daily closing prices of the underlying equity. This provides a historical measure of volatility based on actual price movements
+
+```{r}
+# Calculate returns
+prices[, returns := close / shift(close) - 1, by = symbol]
+
+# Rolling 12-month realized volatility (252 trading days)
+prices[, RVLT := frollsum(returns^2, n = 252), by = symbol]
+```
+
+Lets plot realized volatilies for sample of stocks using tinyplot
+
+```{r}
+prices[symbol %in% prices[, sample(unique(symbol), 4)]] |>
+  # na.omit(_) |>
+  plt(RVLT ~ date | symbol, data = _)
+
+```
+
+#### 2) Options data
+
+We are going to use ORATS options data. Here we explain all columns\
+
+```{r}
+#| echo: false
+
+option_data <- data.table(
+  Variable = c("ticker", "stkPx", "expirDate", "yte", "strike", 
+               "cVolu", "cOi", "pVolu", "pOi", "cBidPx", 
+               "cValue", "cAskPx", "pBidPx", "pValue", "pAskPx", 
+               "cBidIv", "cAskIv", "smoothSmvVol", "pBidIv", "pMidIv", 
+               "pAskIv", "iRate", "divRate", "residualRateData", "delta", 
+               "gamma", "theta", "vega", "rho", "phi", 
+               "driftlessTheta", "extVol", "extCTheo", "extPTheo", 
+               "spot_px", "trade_date"),
+  
+  Description = c(
+    "The underlying symbol that represents the stock or index on which the option is based.",
+    "The current price of the underlying stock. For indexes, this is the solved implied futures price for each expiration.",
+    "The date on which the option expires.",
+    "The number of years remaining until the option's expiration date.",
+    "The price at which the option can be exercised.",
+    "The total number of call option contracts traded on a particular day total at the time observed.",
+    "The total number of outstanding call option contracts updated by OCC the night before.",
+    "The total number of put option contracts traded on a particular day total at the time observed.",
+    "The total number of outstanding put option contracts updated by OCC the night before.",
+    "The NBBO price at which a market maker is willing to buy a call option.",
+    "The theoretical value of a call option based on a smooth volatility assumption.",
+    "The NBBO price at which a market maker is willing to sell a call option.",
+    "The NBBO price at which a market maker is willing to buy a put option.",
+    "The theoretical value of a put option based on a smooth volatility assumption.",
+    "The NBBO price at which a market maker is willing to sell a put option.",
+    "The implied volatility of a call option at the current NBBO bid price.",
+    "The implied volatility of a call option at the current NBBO ask price.",
+    "The smoothed implied volatility of an option based on the ORATS model.",
+    "The implied volatility of a put option at the current NBBO bid price.",
+    "The implied volatility of a put option at the midpoint of the current NBBO bid and ask prices.",
+    "The implied volatility of a put option at the current NBBO ask price.",
+    "The continuous interest (risk-free) rate.",
+    "The continuous dividend yield of discrete dividend's NPV.",
+    "The implied interest rate that is derived from the option pricing model.",
+    "The theoretical increase in an option's price due to a one dollar increase in the underlying price.",
+    "The rate of change of an option's delta with respect to a one dollar increase in the price of the underlying asset.",
+    "The rate of time decay of an option's value for one day.",
+    "The sensitivity of an option's price to a one percent rise in the implied volatility of the option.",
+    "The sensitivity of an option's price to a one percent increase in interest rates for the option.",
+    "A measure of the convexity of an option's price with respect to changes in the price of the underlying asset.",
+    "The rate of time decay of an option's value as the expiration date approaches, without taking into account the drift in the price of the underlying asset.",
+    "The external implied volatility of the underlying asset, as provided by an external data source. The external data source is from the ORATS forecast volatility.",
+    "The external theoretical value of a call option, as provided by an external data source.",
+    "The external theoretical value of a put option, as provided by an external data source.",
+    "The current market price of the underlying asset. For indexes this is the cash price.",
+    "The date on which the option was traded."
+  )
+)
+datatable(option_data, 
+          caption = "Option Data Definitions", 
+          rownames = FALSE,
+          options = list(pageLength = 40))
+```
+
+I have daily options data from 2007 to 2024. This data is really big, but we don't need most of the data. That is, in the paper the authors use 5 filter steps to extract only options contracts we need for analysis
+
+To save RAM, we will import zipped cav files and do analysis for every file separetly. This is slower, but I wil allows us to import more data.
+
+TODO: Save ziped csv files in parquet database with symbol as index and import using arrow package.
+
+First, lets create filtering function:
+
+```{r}
+# Filtering process in the paper:
+# For both implied volatility measures we use ATM straddle implied volatilities 
+# computed as the average volatility of the put and call options closest to 
+# at-the-money which survive the following filters: 
+# (1) The underlying equity has a closing price of at least $10; 
+# (2) The option price must not violate arbitrage conditions; 
+# (3) The option must have a non-zero bid; 
+# (4) The absolute value of the delta must be between 0.35 and 0.65; and 
+# (5) The implied volatility must be between 3% and 200%.
+
+filter_options = function(dt) {
+  # apply filter 1
+  dt = dt[stkPx > 10]
+  # apply filter 2
+  dt = dt[abs(cBidPx - cAskPx) > 0]
+  dt = dt[abs(pBidPx - pAskPx) > 0]
+  # apply filter 3
+  dt = dt[cBidPx > 0]
+  dt = dt[pBidPx > 0]
+  # apply filter 4
+  dt = dt[abs(delta) > 0.35 & abs(delta) < 0.65]
+  # apply filter 5
+  dt = dt[cBidIv > 0.3 & cBidIv < 2]
+  dt = dt[pBidIv > 0.3 & pBidIv < 2]
+  
+  return(dt)
+}
+```
+
+```{r}
+# Get all paths for 2022 and 2023
+paths = paste0("F:/data/option/", 2022:2023)
+files = unlist(lapply(paths, list.files, full.names = TRUE))
+
+# Read sample
+dt = lapply(files, function(x) filter_options(fread(x)))
+dt = rbindlist(dt)
+```
+
+In the end, we keep only `{r} {round(nrow(dt) / nrow(dt) * 100, 2)}` percent of the data.
+
+We will do some preliminary data cleaning
+
+```{r}
+dt[, let(
+  expirDate = as.IDate(as.Date(expirDate, format = "%m/%d/%Y")),
+  trade_date = as.IDate(as.Date(trade_date, format = "%m/%d/%Y"))
+)]
+```
+
+##### Data Summary
+
+```{r}
+# Dimension of the dataset
+dim(dt)
+
+# Data summary
+head(dt)
+```
+
+```{r}
+# # Plot call bid prices
+# dt_ = dt_raw[ticker == "AAPL"][1:1000]
+# plt(~ cBidPx | cOpra, data = dt_)
+
+# # Histogram of implied volatilities using tinyplot
+# plt(~ cBidIv, data = dt_raw)
+```
+
+##### ATM options
+
+**1. Identify ATM Options:**
+
+```{r}
+# Add a column for the absolute difference between strike and spot price
+dt[, atm_diff := abs(strike - stkPx)]
+
+# Find ATM options (minimum atm_diff for each ticker, date, and expiration)
+atm_options = dt[, .SD[which.min(atm_diff)], by = .(ticker, trade_date, expirDate)]
+
+# Inspect the ATM options
+head(atm_options)
+```
+
+**2.Calculate ATM Straddle Implied Volatility**
+
+Use the average implied volatilities of the call and put for each ATM option:
+
+$$ATMIV=\frac{CallIV(cMidIv)+PutIV(pMidIv)}{2}$$
+
+```{r}
+# Calculate ATM straddle implied volatility using ORATS data
+atm_options[, atm_iv := (cMidIv + pMidIv) / 2]
+
+```
+
+**3. Define** $IV_{1M}$ and $IV_{LT}$
+
+-   Short-Term ($IV_{1M}$): Closest to 30 days to expiration. This implies finding the option with the shortest time-to-expiry in the range of approximately 0–60 days.
+-   Long-Term ($IV_{LT}$): Maturity of at least 180 days (allow flexibility for options with maturities slightly greater than 6 months).
+
+```{r}
+# Step 1: Calculate days to expiration
+atm_options[, days_to_expiry := yte * 365]
+
+# Step 2: Filter and calculate short-term IV (nearest to 1 month, 0–60 days)
+short_term_iv = atm_options[
+  days_to_expiry > 0 & days_to_expiry <= 60,  # Short-term filter
+  .SD[which.min(abs(days_to_expiry - 30))],  # Closest to 30 days
+  by = .(ticker, trade_date)  # Group by ticker and trade_date
+]
+long_term_iv = atm_options[
+  days_to_expiry >= 180,  # Long-term filter
+  .SD[which.min(days_to_expiry)],  # Shortest maturity ≥ 180 days
+  by = .(ticker, trade_date)  # Group by ticker and trade_date
+]
+
+# Ste 3: Merge short-term and long-term IVs
+iv_data = merge(short_term_iv, long_term_iv, by = c("ticker", "trade_date"),
+                suffixes = c("_short", "_long"))
+
+```
+
+#### 3) Merge data
+
+**4. Merge short-term and long-term IVs**
+
+Merge short-term and long-term IV values to compute SLOPE and other measures
+
+```{r}
+# Keep only necessary columns for further analysis
+iv_data_simplified = iv_data[, .(
+  ticker,
+  trade_date,
+  IV1M = atm_iv_short,    # Rename short-term IV
+  IVLT = atm_iv_long      # Rename long-term IV
+)]
+
+# Calculate SLOPE
+iv_data_simplified[, SLOPE := (IVLT - IV1M) / IVLT]
+
+# Set key to make merge faster
+setkey(iv_data_simplified, ticker)
+setorder(iv_data_simplified, ticker, trade_date)
+
+# Merge realized volatility
+iv_data_simplified = merge(
+  iv_data_simplified,
+  prices[, .(symbol = toupper(symbol), date, RVLT)],
+  by.x = c("ticker", "trade_date"),
+  by.y = c("symbol", "date"),
+  all.x = TRUE,
+  all.y = FALSE
+)
+
+# Order
+setorder(iv_data_simplified, ticker, trade_date)
+
+# Calculate IVRV slope
+iv_data_simplified[, IVRV_SLOPE := (RVLT - IV1M) / RVLT]
+
+# View simplified dataset
+print(iv_data_simplified)
+```
+
+In below analysis I dicoverd some very large values for RVLT. It looks like error so I decided to delete extreme values here.
+
+First, let;s list symbols that have very large RVTL values
+
+```{r}
+# Identify tickers with very large RVTL values
+tickers_outliers = iv_data_simplified[, .(have_outlier = any(RVLT > 10, na.rm = TRUE)), 
+                                      by = ticker]
+tickers_outliers = tickers_outliers[have_outlier == TRUE, ticker]
+tickers_outliers
+```
+
+Let's plot RVLT of one symbol:
+
+```{r}
+plt(RVLT ~ trade_date, data = iv_data_simplified[ticker == "DO"])
+```
+
+Let's see close price too
+
+```{r}
+plt(close ~ date, data = prices[symbol == "do"])
+```
+
+Obviously, there is an error in this symbol. We will remove all this symbols. There are `{r} length(tickers_outliers)` such symbols (out of `{r} iv_data_simplified[, length(unique(ticker))]`)
+
+```{r}
+iv_data_simplified = iv_data_simplified[ticker %notin% tickers_outliers]
+```
+
+::: callout-important
+## Check symbols in daily prices code!: "APP" "CBL" "NE" "GEN" "PATH" "AADI" "DO" "SLNO" "DWAC" "TXMD" "AMC"
+:::
+
+### Descriptive and summary statistics
+
+Let's start with some basic summary statistics
+
+```{r}
+iv_data_simplified[, .(
+  start_date = min(trade_date),
+  end_date = max(trade_date),
+  number_of_observations = .N,
+  unique_tickers = length(unique(ticker))
+)]
+```
+
+```{r}
+mean_ = transpose(iv_data_simplified[, .(
+  SLOPE = round(mean(SLOPE, na.rm = TRUE), 2),
+  IV1M = round(mean(IV1M, na.rm = TRUE), 2),
+  IVLT = round(mean(IVLT, na.rm = TRUE), 2),
+  RVLT = round(mean(RVLT, na.rm = TRUE), 2)
+)], keep.names = "Variable")
+colnames(mean_)[2] = "mean"
+
+max_ = transpose(iv_data_simplified[, .(
+  SLOPE = round(max(SLOPE, na.rm = TRUE), 2),
+  IV1M = round(max(IV1M, na.rm = TRUE), 2),
+  IVLT = round(max(IVLT, na.rm = TRUE), 2),
+  RVLT = round(max(RVLT, na.rm = TRUE), 2)
+)], keep.names = "Variable")
+colnames(max_)[2] = "max"
+
+sd_ = transpose(
+  iv_data_simplified[, .(
+    SLOPE = round(sd(SLOPE, na.rm = TRUE), 2),
+    IV1M = round(sd(IV1M, na.rm = TRUE), 2),
+    IVLT = round(sd(IVLT, na.rm = TRUE), 2),
+    RVLT = round(sd(RVLT, na.rm = TRUE), 2))], keep.names = "Variable")
+colnames(sd_)[2] = "sd"
+
+skew_ = transpose(iv_data_simplified[, .(
+  SLOPE = round(skewness(SLOPE, na.rm = TRUE), 2),
+  IV1M = round(skewness(IV1M, na.rm = TRUE), 2),
+  IVLT = round(skewness(IVLT, na.rm = TRUE), 2),
+  RVLT = round(skewness(RVLT, na.rm = TRUE), 2)
+)], keep.names = "Variable")
+colnames(skew_)[2] = "skew"
+
+kurtosis_ = transpose(iv_data_simplified[, .(
+  SLOPE = round(kurtosis(SLOPE, na.rm = TRUE), 2),
+  IV1M = round(kurtosis(IV1M, na.rm = TRUE), 2),
+  IVLT = round(kurtosis(IVLT, na.rm = TRUE), 2),
+  RVLT = round(kurtosis(RVLT, na.rm = TRUE), 2)
+)], keep.names = "Variable")
+colnames(kurtosis_)[2] = "kurtosis"
+```
+
+```{r}
+probs_ = c(0.01, 0.05, 0.25, 0.5, 0.95, 0.99)
+q_ = transpose(iv_data_simplified[, .(
+  SLOPE = round(quantile(SLOPE, na.rm = TRUE, probs = probs_), 2),
+  IV1M = round(quantile(IV1M, na.rm = TRUE, probs = probs_), 2),
+  IVLT = round(quantile(IVLT, na.rm = TRUE, probs = probs_), 2),
+  RVLT = round(quantile(RVLT, na.rm = TRUE, probs = probs_), 2)
+  )],
+  keep.names = "Variable"
+)
+names_ = paste0("q", probs_*100)
+colnames(q_)[2:ncol(q_)] = names_
+```
+
+```{r}
+Reduce(function(x, y) merge(x, y, by = "Variable"), 
+       list(mean_, sd_, skew_, kurtosis_, max_, q_))
+```
+
+Kurtosis for the RVLT is very high. something we would not expect. Other values are expected I would say.
+
+I put here screenshot of summary statistics from the paper:
+
+![](images/summary_jump_returns.png)
+
+It seems my statiscs are in general more volatile. For exmaple, much higher kurtosis for the slope.
+
+Implied volatilities are higher than mean volatilies in the paper, but this is expected because of different time period. We get negative slope, as in the paper, since mean $IV_{1M} > IV_{LT}$.
