@@ -77,6 +77,8 @@ library(DT)
 library(tinyplot)
 library(finutils)
 library(PerformanceAnalytics)
+library(ggplot2)
+library(AzureStor)
 ```
 
 ### Data
@@ -115,7 +117,7 @@ We need to calculate yearly realized volatility. From the paper, realized volati
 prices[, returns := close / shift(close) - 1, by = symbol]
 
 # Rolling 12-month realized volatility (252 trading days)
-prices[, RVLT := frollsum(returns^2, n = 252), by = symbol]
+prices[, RVLT := sqrt(frollsum(returns^2, n = 252)), by = symbol]
 ```
 
 Lets plot realized volatilies for sample of stocks using tinyplot
@@ -235,7 +237,16 @@ files = unlist(lapply(paths, list.files, full.names = TRUE))
 # Read sample
 dt = lapply(files, function(x) filter_options(fread(x)))
 dt = rbindlist(dt)
+
+# Order
+setorder(dt, ticker, trade_date)
 ```
+
+```{r}
+# Check one symbol
+dt[ticker == "AAPL"]
+```
+
 
 In the end, we keep only `{r} {round(nrow(dt) / nrow(dt) * 100, 2)}` percent of the data.
 
@@ -257,6 +268,12 @@ dim(dt)
 # Data summary
 head(dt)
 ```
+
+```{r}
+# Check one symbol
+dt[ticker == "AAPL"]
+```
+
 
 ```{r}
 # # Plot call bid prices
@@ -328,10 +345,14 @@ iv_data = merge(short_term_iv, long_term_iv, by = c("ticker", "trade_date"),
 Merge short-term and long-term IV values to compute SLOPE and other measures
 
 ```{r}
+
+iv_data[ticker == "AAPL"]
+
 # Keep only necessary columns for further analysis
 iv_data_simplified = iv_data[, .(
   ticker,
   trade_date,
+  stkPx_short,
   IV1M = atm_iv_short,    # Rename short-term IV
   IVLT = atm_iv_long      # Rename long-term IV
 )]
@@ -346,7 +367,7 @@ setorder(iv_data_simplified, ticker, trade_date)
 # Merge realized volatility
 iv_data_simplified = merge(
   iv_data_simplified,
-  prices[, .(symbol = toupper(symbol), date, RVLT)],
+  prices[, .(symbol = toupper(symbol), date, RVLT, close, open)],
   by.x = c("ticker", "trade_date"),
   by.y = c("symbol", "date"),
   all.x = TRUE,
@@ -397,6 +418,13 @@ iv_data_simplified = iv_data_simplified[ticker %notin% tickers_outliers]
 ## Check symbols in daily prices code!: "APP" "CBL" "NE" "GEN" "PATH" "AADI" "DO" "SLNO" "DWAC" "TXMD" "AMC"
 :::
 
+Additionally, I discovered some very small IVRV_SLOPE values. I will delete those too
+
+```{r}
+# Remove rowswhere RV is very low
+iv_data_simplified = iv_data_simplified[IVRV_SLOPE > -5]
+```
+
 ### Descriptive and summary statistics
 
 Let's start with some basic summary statistics
@@ -413,6 +441,7 @@ iv_data_simplified[, .(
 ```{r}
 mean_ = transpose(iv_data_simplified[, .(
   SLOPE = round(mean(SLOPE, na.rm = TRUE), 2),
+  IVRV_SLOPE = round(mean(IVRV_SLOPE, na.rm = TRUE)),
   IV1M = round(mean(IV1M, na.rm = TRUE), 2),
   IVLT = round(mean(IVLT, na.rm = TRUE), 2),
   RVLT = round(mean(RVLT, na.rm = TRUE), 2)
@@ -421,15 +450,26 @@ colnames(mean_)[2] = "mean"
 
 max_ = transpose(iv_data_simplified[, .(
   SLOPE = round(max(SLOPE, na.rm = TRUE), 2),
+  IVRV_SLOPE = round(max(IVRV_SLOPE, na.rm = TRUE)),
   IV1M = round(max(IV1M, na.rm = TRUE), 2),
   IVLT = round(max(IVLT, na.rm = TRUE), 2),
   RVLT = round(max(RVLT, na.rm = TRUE), 2)
 )], keep.names = "Variable")
 colnames(max_)[2] = "max"
 
+min_ = transpose(iv_data_simplified[, .(
+  SLOPE = round(min(SLOPE, na.rm = TRUE), 2),
+  IVRV_SLOPE = round(min(IVRV_SLOPE, na.rm = TRUE)),
+  IV1M = round(min(IV1M, na.rm = TRUE), 2),
+  IVLT = round(min(IVLT, na.rm = TRUE), 2),
+  RVLT = round(min(RVLT, na.rm = TRUE), 2)
+)], keep.names = "Variable")
+colnames(min_)[2] = "min"
+
 sd_ = transpose(
   iv_data_simplified[, .(
     SLOPE = round(sd(SLOPE, na.rm = TRUE), 2),
+    IVRV_SLOPE = round(sd(IVRV_SLOPE, na.rm = TRUE)),
     IV1M = round(sd(IV1M, na.rm = TRUE), 2),
     IVLT = round(sd(IVLT, na.rm = TRUE), 2),
     RVLT = round(sd(RVLT, na.rm = TRUE), 2))], keep.names = "Variable")
@@ -437,6 +477,7 @@ colnames(sd_)[2] = "sd"
 
 skew_ = transpose(iv_data_simplified[, .(
   SLOPE = round(skewness(SLOPE, na.rm = TRUE), 2),
+  IVRV_SLOPE = round(skewness(IVRV_SLOPE, na.rm = TRUE)),
   IV1M = round(skewness(IV1M, na.rm = TRUE), 2),
   IVLT = round(skewness(IVLT, na.rm = TRUE), 2),
   RVLT = round(skewness(RVLT, na.rm = TRUE), 2)
@@ -445,6 +486,7 @@ colnames(skew_)[2] = "skew"
 
 kurtosis_ = transpose(iv_data_simplified[, .(
   SLOPE = round(kurtosis(SLOPE, na.rm = TRUE), 2),
+  IVRV_SLOPE = round(kurtosis(IVRV_SLOPE, na.rm = TRUE)),
   IV1M = round(kurtosis(IV1M, na.rm = TRUE), 2),
   IVLT = round(kurtosis(IVLT, na.rm = TRUE), 2),
   RVLT = round(kurtosis(RVLT, na.rm = TRUE), 2)
@@ -456,6 +498,7 @@ colnames(kurtosis_)[2] = "kurtosis"
 probs_ = c(0.01, 0.05, 0.25, 0.5, 0.95, 0.99)
 q_ = transpose(iv_data_simplified[, .(
   SLOPE = round(quantile(SLOPE, na.rm = TRUE, probs = probs_), 2),
+  IVRV_SLOPE = round(quantile(IVRV_SLOPE, na.rm = TRUE, probs = probs_), 2),
   IV1M = round(quantile(IV1M, na.rm = TRUE, probs = probs_), 2),
   IVLT = round(quantile(IVLT, na.rm = TRUE, probs = probs_), 2),
   RVLT = round(quantile(RVLT, na.rm = TRUE, probs = probs_), 2)
@@ -468,7 +511,7 @@ colnames(q_)[2:ncol(q_)] = names_
 
 ```{r}
 Reduce(function(x, y) merge(x, y, by = "Variable"), 
-       list(mean_, sd_, skew_, kurtosis_, max_, q_))
+       list(mean_, sd_, skew_, kurtosis_, min_, q_, max_))
 ```
 
 Kurtosis for the RVLT is very high. something we would not expect. Other values are expected I would say.
@@ -480,3 +523,112 @@ I put here screenshot of summary statistics from the paper:
 It seems my statiscs are in general more volatile. For exmaple, much higher kurtosis for the slope.
 
 Implied volatilities are higher than mean volatilies in the paper, but this is expected because of different time period. We get negative slope, as in the paper, since mean $IV_{1M} > IV_{LT}$.
+
+NOTE: IVRV SLOPE has strange summary statistics so take it with grant of sault.
+
+
+
+```{r}
+# Create n quantiles forevery Thueasday
+n = 10
+slope_q = iv_data_simplified[, .(ticker, 
+                                 trade_date, 
+                                 SLOPE, 
+                                 close, 
+                                 price = stkPx_short, 
+                                 open)]
+slope_q[, open_lead := shift(open, 1, NA, "lead"), by = ticker]
+slope_q[, data.table::wday(trade_date)]
+slope_q = slope_q[data.table::wday(trade_date) == 3]
+
+# Create target variable as open next day / close at the end of the week
+setorder(slope_q, ticker, trade_date)
+slope_q[, wret := shift(open, 1, NA, "lead") / open_lead - 1, by = ticker]
+
+# Remove Na values for target
+slope_q = na.omit(slope_q, cols = "wret")
+
+# Create quantiles
+slope_q[, q := dplyr::ntile(SLOPE, 20), by = trade_date]
+```
+
+```{r}
+slope_q[, .N, by = .(trade_date, q)][order(trade_date)]
+```
+
+
+Lets. do very simple visualisations to check if there is any predictive power of SLOPE (in predicting stock returns)
+
+```{r}
+# Performance across deciles
+# slope_q[, .(return = mean(wret)), by = q][order(q)]
+plt(return ~ q, data = slope_q[, .(return = mean(wret)), by = q][order(q)])
+```
+
+```{r}
+plt(return ~ q, data = slope_q[, .(return = median(wret)), by = q][order(q)])
+```
+
+```{r}
+# Mean returns by year
+dt_ = slope_q[, .(return = mean(wret)), by = .(m = round(data.table::yearmon(trade_date), 2), q)]
+plt(return ~ q, 
+    facet = ~m,
+    data = as.data.frame(dt_))
+```
+
+```{r}
+# Mean returns by year
+dt_ = slope_q[, .(return = median(wret)), by = .(m = round(data.table::yearmon(trade_date), 2), q)]
+plt(return ~ q, 
+    facet = ~m,
+    data = as.data.frame(dt_))
+```
+
+```{r}
+ggplot(slope_q, aes(x = SLOPE, y = wret)) +
+  geom_smooth(method = "lm")
+```
+
+```{r}
+ggplot(slope_q, aes(x = SLOPE, y = wret)) +
+  geom_smooth(method = "gam")
+```
+
+Backtests across quantiles
+
+```{r}
+back = slope_q[q == 20]
+back[, weights := 1 / .N, by = trade_date]
+back[, mean(wret, na.rm = TRUE)]
+portfolio = back[, .(ret = sum(weights * (wret-0.002))), by = trade_date]
+setorder(portfolio, trade_date)
+charts.PerformanceSummary(portfolio)
+```
+
+
+Save to Quantconnect to backtest
+
+```{r}
+# Prepare 
+qc_data = slope_q[q == 20, .(date = trade_date, symbol = ticker)]
+setorder(qc_data, date)
+qc_data[, unique(date)]
+qc_data[, date := paste0(as.character(date), " 16:00:00")]
+
+# Save to Quantconnect
+endpoint = "https://snpmarketdata.blob.core.windows.net/"
+key = Sys.getenv("BLOB-KEY-SNP")
+BLOBENDPOINT = storage_endpoint(endpoint, key=key)
+cont = storage_container(BLOBENDPOINT, "qc-backtest")
+storage_write_csv(qc_data, cont, "iv_sort.csv")
+```
+
+```{r}
+# Compare backtest and local
+back[ticker == "XLNX"]
+```
+
+
+
+
