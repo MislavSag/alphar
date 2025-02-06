@@ -72,6 +72,7 @@ We show when term structure slope is low, or downward sloping (short term volati
 ```{r}
 #| warning: false
 
+# remotes::install_github("MislavSag/finutils")
 library(fastverse)
 library(DT)
 library(tinyplot)
@@ -90,7 +91,7 @@ I use Quantconnect dailydata for all stocks from 199.8 to today. I will use finu
 ```{r}
 # Import data
 prices = qc_daily(
-  file_path = "F:/lean/data/stocks_daily.csv",
+  file_path = "/home/sn/lean/data/stocks_daily.csv",
   price_threshold = 1e-8,
   min_obs = 252,
   market_symbol = NULL,
@@ -231,7 +232,7 @@ filter_options = function(dt) {
 
 ```{r}
 # Get all paths for 2022 and 2023
-paths = paste0("F:/data/option/", 2022:2023)
+paths = paste0("/home/sn/data/option/", 2022:2023)
 files = unlist(lapply(paths, list.files, full.names = TRUE))
 
 # Read sample
@@ -243,10 +244,12 @@ setorder(dt, ticker, trade_date)
 ```
 
 ```{r}
+# Check raw options data
+dim(dt)
+
 # Check one symbol
 dt[ticker == "AAPL"]
 ```
-
 
 In the end, we keep only `{r} {round(nrow(dt) / nrow(dt) * 100, 2)}` percent of the data.
 
@@ -273,7 +276,6 @@ head(dt)
 # Check one symbol
 dt[ticker == "AAPL"]
 ```
-
 
 ```{r}
 # # Plot call bid prices
@@ -348,7 +350,7 @@ Merge short-term and long-term IV values to compute SLOPE and other measures
 
 iv_data[ticker == "AAPL"]
 
-# Keep only necessary columns for further analysis
+# Keep only necessary columns for further analysisiv_data
 iv_data_simplified = iv_data[, .(
   ticker,
   trade_date,
@@ -526,8 +528,6 @@ Implied volatilities are higher than mean volatilies in the paper, but this is e
 
 NOTE: IVRV SLOPE has strange summary statistics so take it with grant of sault.
 
-
-
 ```{r}
 # Create n quantiles forevery Thueasday
 n = 10
@@ -550,12 +550,12 @@ slope_q = na.omit(slope_q, cols = "wret")
 
 # Create quantiles
 slope_q[, q := dplyr::ntile(SLOPE, 20), by = trade_date]
+head(slope_q)
 ```
 
 ```{r}
 slope_q[, .N, by = .(trade_date, q)][order(trade_date)]
 ```
-
 
 Lets. do very simple visualisations to check if there is any predictive power of SLOPE (in predicting stock returns)
 
@@ -601,11 +601,10 @@ Backtests across quantiles
 back = slope_q[q == 20]
 back[, weights := 1 / .N, by = trade_date]
 back[, mean(wret, na.rm = TRUE)]
-portfolio = back[, .(ret = sum(weights * (wret-0.002))), by = trade_date]
+portfolio = back[, .(ret = sum(weights * (wret-0.003))), by = trade_date]
 setorder(portfolio, trade_date)
 charts.PerformanceSummary(portfolio)
 ```
-
 
 Save to Quantconnect to backtest
 
@@ -629,6 +628,77 @@ storage_write_csv(qc_data, cont, "iv_sort.csv")
 back[ticker == "XLNX"]
 ```
 
+## ATM STRADDLE PORTFOLIO SORT
+
+The methodology employed to identify straddles and form portfolios mirrors
+ the calculation of slope. Each Tuesday, we identify eligible puts and calls with standard monthly
+ expirations for equities with a closing price of at least $10. As in the calculation of SLOPE and
+ IV RVSLOPE, the puts and calls selected are those closest to ATM, do not violate arbitrage
+ conditions and have absolute deltas between 0.35 and 0.65. For each maturity from one to six
+ months, we form ATM straddles for each equity with a valid put and call option. Since options for
+ each maturity are not listed for all but the most liquid options, we do not require ATM straddles for
+ each maturity as a prerequisite for inclusion. The only qualification with regard to maturity is the
+ identification of a valid ATM straddle with a maturity of at least six months so that SLOPE can
+ be calculated. To avoid microstructure issues, the midpoint of the closing bid and ask prices for the
+ call and put are used from the following day to calculate opening prices. Closing straddle prices are
+ similarly calculated the following week. While the straddles have deltas close to 0, we delta hedge
+ the option at the close each day using the deltas reported from OptionMetrics in order to mute
+ directional exposure. Returns for each portfolio are calculated following Frazzini and Pedersen
+ (2012). At trade inception, straddles worth $1 are held, V0 = 1. At the end of each day, the value
+ of the portfolio is comprised of the value of the option position, the return from the delta hedge,
+ and financing costs
+ 
+```{r}
+# The methodology employed to identify straddles and form portfolios mirrors
+#  the calculation of slope. Each Tuesday, we identify eligible puts and calls with standard monthly
+#  expirations for equities with a closing price of at least $10. As in the calculation of SLOPE and
+#  IV RVSLOPE, the puts and calls selected are those closest to ATM, do not violate arbitrage
+#  conditions and have absolute deltas between 0.35 and 0.65. For each maturity from one to six
+#  months, we form ATM straddles for each equity with a valid put and call option. Since options for
+#  each maturity are not listed for all but the most liquid options, we do not require ATM straddles for
+#  each maturity as a prerequisite for inclusion. The only qualification with regard to maturity is the
+#  identification of a valid ATM straddle with a maturity of at least six months so that SLOPE can
+#  be calculated. To avoid microstructure issues, the midpoint of the closing bid and ask prices for the
+#  call and put are used from the following day to calculate opening prices. Closing straddle prices are
+#  similarly calculated the following week. While the straddles have deltas close to 0, we delta hedge
+#  the option at the close each day using the deltas reported from OptionMetrics in order to mute
+#  directional exposure. Returns for each portfolio are calculated following Frazzini and Pedersen
+#  (2012). At trade inception, straddles worth $1 are held, V0 = 1. At the end of each day, the value
+#  of the portfolio is comprised of the value of the option position, the return from the delta hedge,
+#  and financing costs
+
+# Inspect
+atm_options[ticker == "AAPL" & trade_date == as.Date("2022-01-10")]
+
+# Try for one expiration
+atm_options_30d <- atm_options[
+  days_to_expiry >= 15 & days_to_expiry <= 45
+]
+atm_options_30d[, diff_30 := abs(days_to_expiry - 30)]
+atm_options_30d = atm_options_30d[
+  , .SD[which.min(diff_30)], 
+  by = .(ticker, trade_date)
+]
+atm_options_30d[, diff_30 := NULL]
+setorder(atm_options_30d, ticker, trade_date)
+
+# Create columns for mid-call and mid-put
+atm_options_30d[, mid_call := (cBidPx + cAskPx)/2 ]
+atm_options_30d[, mid_put  := (pBidPx + pAskPx)/2 ]
+
+# Sum to get total straddle cost
+atm_options_30d[, straddle_price := mid_call + mid_put ]
+
+
+atm_options_30d[ticker == "AAPL"]
+
+```
+
+```{r}
+ggplot(atm_options_30d[ticker == "AAPL"], aes(x = straddle_price)) +
+  geom_histogram()
+
+```
 
 
 
