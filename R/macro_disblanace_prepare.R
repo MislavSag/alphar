@@ -15,6 +15,7 @@ meta[, unique(frequency_short)]
 
 # Save meta
 fwrite(meta, "D:/fred/meta.csv")
+# meta = fread(fwrite("D:/fred/meta.csv")
 
 # Get daily meta
 metad = meta[frequency_short == "D"]

@@ -38,6 +38,24 @@ double backtest_sell_below_threshold(NumericVector returns, NumericVector indica
   return cum_returns - 1; // Adjust for initial value
 }
 
+// [[Rcpp::export]]
+double backtest_sell_above_threshold(NumericVector returns, NumericVector indicator, double threshold) {
+  int n = indicator.size();
+  NumericVector sides(n, 1.0); // Initialize with 1s
+
+  for (int z = 1; z < n; ++z) {
+    if (!NumericVector::is_na(indicator[z-1]) && indicator[z-1] > threshold) {
+      sides[z] = 0;
+    }
+  }
+
+  double cum_returns = 1.0; // Start cumulative returns at 1
+  for(int z = 0; z < n; ++z) {
+    cum_returns *= (1 + returns[z] * sides[z]);
+  }
+  return cum_returns - 1; // Adjust for initial value
+}
+
 DataFrame cbind_scalar_and_df(double x, DataFrame df) {
   // Get the number of rows in the DataFrame
   int n = df.nrows();
@@ -128,6 +146,27 @@ NumericVector opt(DataFrame df, DataFrame params) {
 }
 
 // [[Rcpp::export]]
+NumericVector opt_above(DataFrame df, DataFrame params) {
+
+  // Define help variables
+  int n_params = params.nrow();
+  NumericVector returns = df["returns"];
+  CharacterVector indicators = params["variable"];
+  NumericVector thresholds = params["thresholds"];
+
+  // return 1;
+  // Loop through all params rows and calculate the backtest results
+  NumericVector results(n_params);
+  for(int i = 0; i < n_params; ++i) {
+    String ind_ = indicators[i];
+    NumericVector indicator_ = df[ind_];
+    results[i] = backtest_sell_above_threshold(returns, indicator_, thresholds[i]);
+  }
+
+  return results;
+}
+
+// [[Rcpp::export]]
 NumericVector calculate_sma(NumericVector x, int n) {
   int size = x.size();
   NumericVector sma(size);
@@ -174,6 +213,34 @@ NumericVector opt_with_sma(DataFrame df, DataFrame params) {
 
   return results;
 }
+
+// [[Rcpp::export]]
+NumericVector opt_with_sma_above(DataFrame df, DataFrame params) {
+
+  // Define help variables
+  int n_params = params.nrow();
+  NumericVector returns = df["returns"];
+  CharacterVector indicators = params["variable"];
+  NumericVector thresholds = params["thresholds"];
+  NumericVector sma_n = params["sma_n"];
+
+  // return 1;
+  // Loop through all params rows and calculate the backtest results
+  NumericVector results(n_params);
+  for(int i = 0; i < n_params; ++i) {
+    String ind_ = indicators[i];
+    NumericVector indicator_ = df[ind_];
+    int sma_n_ = sma_n[i];
+
+    // Calculate SMA for the current indicator
+    NumericVector sma_indicator_ = calculate_sma(indicator_, sma_n_);
+
+    results[i] = backtest_sell_above_threshold(returns, sma_indicator_, thresholds[i]);
+  }
+
+  return results;
+}
+
 
 // [[Rcpp::export]]
 List wfo(DataFrame df,

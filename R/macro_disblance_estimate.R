@@ -18,7 +18,6 @@ library(AzureStor)
 VINTAGE = TRUE # If VINTAGE is TRUE, then we will use vintage data
 
 
-
 # DATA --------------------------------------------------------------------
 # Import SPY data
 spy = qc_daily(file_path = "F:/lean/data/stocks_daily.csv", symbols = "spy")
@@ -27,6 +26,7 @@ spy = qc_daily(file_path = "F:/lean/data/stocks_daily.csv", symbols = "spy")
 meta = fread("D:/fred/meta.csv")
 metad = meta[frequency_short == "D"]
 metad = metad[observation_end > (max(observation_end) - 3)]
+dim(metad)
 
 # Function to import FRED data
 import_fred = function(path = "D:/fredbiased", vintage = FALSE, diff_n = FALSE) {
@@ -106,15 +106,16 @@ g1 / g2
 ggplot(macro_dt[series_id == "VIXCLS"], aes(x = date_real)) +
   geom_line(aes(y = value)) +
   geom_line(data = macro_dtv[series_id == "VIXCLS"], aes(y = value), color = "red")
+macro_dt[, .N, by = popularity][order(N)]
 
 # Indicators
 indicators = na.omit(
-  macro_dt[, lapply(.SD, function(x) weighted.mean(x, 1/popularity, na.rm = TRUE)),
+  macro_dt[, lapply(.SD, function(x) mean(x, na.rm = TRUE)),
            by = .(date = date_real),
             .SDcols = data.table::patterns("z", cols = colnames(macro_dt))][order(date)]
 )
 indicatorsv = na.omit(
-  macro_dtv[, lapply(.SD, function(x) weighted.mean(x, 1/popularity, na.rm = TRUE)),
+  macro_dtv[, lapply(.SD, function(x) mean(x, na.rm = TRUE)),
             by = .(date = date_real),
             .SDcols = data.table::patterns("z", cols = colnames(macro_dtv))][order(date)]
 )
@@ -150,6 +151,22 @@ ggplot(indicators[date > as.Date("2020-01-01")], aes(x = date, y = ratio)) +
 indicators[, mean(ratio)]
 indicators[, median(ratio)]
 # TODO: Idea - sell VIX when diff is very high
+
+# # PCA
+# macro_dt_pca = macro_dt[, .(series_id, date_real, value)]
+# macro_dt_pca = dcast(macro_dt_pca, date_real ~ series_id, value.var = "value")
+# setnafill(macro_dt_pca, type = "locf")
+# # Remove columns with many NA
+# remove_ids = macro_dt_pca[, lapply(.SD, function(x) sum(is.na(x))), .SDcols = -1]
+# remove_ids = macro_dt_pca[]
+# macro_dt_pca = macro_dt_pca[, .SD, .SDcols = -names(remove_ids)]
+# macro_dt_pca = na.omit(macro_dt_pca)
+# dim(macro_dt_pca)
+# pca = prcomp(macro_dt_pca[, -1], scale. = TRUE)
+
+# Extract first principal component as primary risk indicator
+# indicators$pca_risk <- as.numeric(predict(pca, risk_factors)[,1])
+
 
 # Save to QC
 qc_data = indicators[, .SD, .SDcols = data.table::patterns("vol_z_\\d+$|^z$|date|ratio")]
@@ -294,17 +311,18 @@ as.data.table(melt(sr))[order(value)]
 # Insample golder rule
 back = indicators[spy, on = "date"]
 # back[, signal := ifelse(TTR::EMA(vol_z_22, 50) < TTR::EMA(vol_z_22, 200), 1, 0)] # 1)
-# back[, signal := ifelse(shift(vol_z_22) < shift(vol_z_22, 66), 1, 0)]            # 2)
+# back[, signal := ifelse(shift(vol_z_22) < shift(vol_z_22, 66), 1, 0)]            # 2)\
+back = na.omit(back)
 back[, signal := ifelse((TTR::EMA(vol_z_22, 50) < TTR::EMA(vol_z_22, 200)) | vol_z_22 < 0,
                         1, 0)] # 1)
-back = back[, .(date, strategy = shift(signal, 1) * returns * 1.5, benchmark = returns)]
+back = back[, .(date, strategy = shift(signal, 1) * returns * 1, benchmark = returns)]
 back_xts = na.omit(as.xts.data.table(back))
 charts.PerformanceSummary(back_xts["2002/"])
 sr = SharpeRatio.annualized(back_xts["2002/"])
 as.data.table(melt(sr))[order(value)]
 lapply(Drawdowns(back_xts["2002/"]), min)
 Return.cumulative(back_xts["2002/"])
-# charts.PerformanceSummary(back_xts["2024"])
+# charts.PerformanceSummary(back_xts["2024/"])
 # charts.PerformanceSummary(back_xts["2025"])
 
 # Insample golder rule with VIX
